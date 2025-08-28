@@ -3,6 +3,7 @@
 Força bruta distribuída de MD5 por comprimento
 
 Modo coordenador ou trabalhador, escolha via menu interativo.
+Agora o trabalhador testa cada conjunto (digitos, minusculas, maiusculas, letras, minusculasdigitos, imprimiveis) em ordem para cada comprimento recebido.
 """
 
 import hashlib
@@ -35,12 +36,7 @@ def menu_coordenador():
     host = input("Host para escutar [0.0.0.0]: ").strip() or "0.0.0.0"
     porta = input("Porta para escutar [12001]: ").strip() or "12001"
     alvo = input("Hash MD5 alvo: ").strip()
-    print("Conjuntos disponíveis:")
-    for nome in CONJUNTOS:
-        print(f"- {nome}")
-    conjunto = input("Conjunto de caracteres [minusculasdigitos]: ").strip() or "minusculasdigitos"
-    if conjunto in CONJUNTOS:
-        conjunto = CONJUNTOS[conjunto]
+    conjunto = "minusculasdigitos"  # só para mostrar no menu, mas será ignorado pelo trabalhador
     return host, int(porta), alvo, conjunto
 
 def menu_trabalhador():
@@ -68,7 +64,6 @@ class Coordenador:
     def iniciar(self):
         print(f"[COORD] Escutando em {self.host}:{self.porta}")
         print(f"[COORD] Alvo MD5: {self.alvo}")
-        print(f"[COORD] Conjunto: {self.conjunto}")
         threading.Thread(target=self._aceitar_conexoes, daemon=True).start()
         try:
             while True:
@@ -84,7 +79,7 @@ class Coordenador:
             print(f"[COORD] Trabalhador conectado de {endereco[0]}:{endereco[1]}")
             with self.lock:
                 self.clientes.add(conexao)
-            self._enviar(conexao, f"CONFIG {self.alvo} {self.conjunto}\n")
+            self._enviar(conexao, f"CONFIG {self.alvo}\n")
             threading.Thread(target=self._tratar_cliente, args=(conexao,), daemon=True).start()
 
     def _tratar_cliente(self, conexao):
@@ -186,7 +181,6 @@ class Trabalhador:
         self.sair = False
         self.senha_encontrada = None
         self.alvo = None
-        self.conjunto = None
 
     def iniciar(self):
         while not self.sair:
@@ -231,14 +225,13 @@ class Trabalhador:
             if linha is None:
                 raise ConnectionError("Desconectado antes da configuração")
             partes = linha.split()
-            if partes[0].upper() == "CONFIG" and len(partes) >= 3:
+            if partes[0].upper() == "CONFIG" and len(partes) >= 2:
                 self.alvo = partes[1].lower()
-                self.conjunto = " ".join(partes[2:])
                 print(f"[TRAB] Alvo recebido: {self.alvo}")
-                print(f"[TRAB] Conjunto recebido: {self.conjunto}")
                 break
 
     def _executar(self):
+        conjuntos_em_ordem = ["digitos", "minusculas", "maiusculas", "letras", "minusculasdigitos", "imprimiveis"]
         while not self.sair:
             self._enviar("PEDIR")
             linha = self._receber_linha()
@@ -258,7 +251,15 @@ class Trabalhador:
                     print(f"[TRAB] Comprimento {comprimento} acima do máximo. Parando.")
                     self.sair = True
                     return
-                self._forca_bruta(comprimento)
+                # Testa todos os conjuntos em ordem
+                for nome_conjunto in conjuntos_em_ordem:
+                    if self.sair:
+                        break
+                    conjunto = CONJUNTOS[nome_conjunto]
+                    print(f"[TRAB] Testando conjunto: {nome_conjunto}")
+                    achou = self._forca_bruta(comprimento, conjunto)
+                    if achou:
+                        break
                 if self.sair:
                     return
                 self._enviar(f"FINALIZADO {comprimento}")
@@ -276,20 +277,20 @@ class Trabalhador:
                 print(f"[TRAB] Comando desconhecido do coordenador: {linha}")
                 time.sleep(0.5)
 
-    def _forca_bruta(self, comprimento):
+    def _forca_bruta(self, comprimento, conjunto):
         alvo = self.alvo
-        conjunto = self.conjunto
         for tup in itertools.product(conjunto, repeat=comprimento):
             if self.sair:
-                return
+                return False
             s = ''.join(tup)
             h = hashlib.md5(s.encode()).hexdigest()
             if h == alvo:
-                print(f"[TRAB] ENCONTRADO '{s}' para comprimento={comprimento}")
+                print(f"[TRAB] ENCONTRADO '{s}' para comprimento={comprimento} e conjunto atual")
                 self._enviar(f"ENCONTRADO {s}")
                 self.sair = True
                 self.senha_encontrada = s
-                return
+                return True
+        return False
 
 def main():
     while True:
