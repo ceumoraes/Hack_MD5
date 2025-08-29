@@ -5,6 +5,7 @@ import hashlib
 import itertools
 import json
 import random
+import sys
 
 PORTA_TCP = 12001
 PORTA_UDP_BERKLEY = 12002
@@ -186,7 +187,6 @@ class ForcaBrutaMD5(threading.Thread):
             comprimento, conjunto_nome = self.pedir_tarefa_ao_coordenador()
             if comprimento is None:
                 if len(self.gerente.get_lista_maquinas()) == 1 and self.on_trab_coord:
-                    # Antes de promover, verifica se senha já foi encontrada!
                     if self.gerente.senha_encontrada is not None:
                         debug(self.clock, "[TRAB] Senha já encontrada. Encerrando sem promover a coordenador.")
                         break
@@ -307,7 +307,6 @@ class ServidorDistribuido:
                 break
             lista = self.gerente.get_lista_maquinas()
             if len(lista) == 1 and lista[0] == self.meu_ip and not self.is_coordenador:
-                # Antes de promover, verifica se senha já foi encontrada!
                 if self.gerente.senha_encontrada is not None:
                     debug(self.clock, "[ELEIÇÃO] Senha já encontrada, não assumindo como coordenador.")
                     break
@@ -438,7 +437,8 @@ class ServidorDistribuido:
                 self.senha_encontrada = senha
                 self.sair = True
                 self.gerente.senha_encontrada = senha
-                self._propagar_encerramento()   # <-- Propaga comando global de encerramento
+                self._propagar_encerramento()
+                sys.exit(0)
             elif cmd == "PEDIR_HASH":
                 if self.is_coordenador:
                     msg = json.dumps({"cmd": "CONFIG_HASH", "hash": self.alvo_md5}).encode()
@@ -470,12 +470,13 @@ class ServidorDistribuido:
                         self.brute_force = None
                 elif self.brute_force:
                     self.brute_force.coordenador_ip = self.coordenador_ip
-            elif cmd == "ENCERRAR":   # <-- NOVO COMANDO GLOBAL
+            elif cmd == "ENCERRAR":
                 debug(self.clock, "[GLOBAL] Mensagem de encerramento recebida. Encerrando processo.")
                 self.sair = True
                 self.gerente.senha_encontrada = self.senha_encontrada
                 if self.brute_force:
                     self.brute_force.sair = True
+                sys.exit(0)
         except Exception as e:
             debug(self.clock, f"Erro ao tratar conexão: {e}")
         finally:
@@ -483,7 +484,7 @@ class ServidorDistribuido:
                 conn.close()
             except: pass
 
-    def _propagar_encerramento(self):  # <-- NOVA FUNÇÃO
+    def _propagar_encerramento(self):
         msg = json.dumps({"cmd": "ENCERRAR"}).encode()
         for ip in self.gerente.get_lista_maquinas():
             if ip != self.meu_ip:
@@ -492,6 +493,9 @@ class ServidorDistribuido:
                         s.sendall(msg)
                 except Exception as e:
                     debug(self.clock, f"Falha ao propagar encerramento para {ip}: {e}")
+        debug(self.clock, "[GLOBAL] Todos sinalizados para encerrar. Encerrando este processo agora.")
+        self.sair = True
+        sys.exit(0)
 
 def get_meu_ip():
     try:
