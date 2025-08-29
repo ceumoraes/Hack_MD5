@@ -23,25 +23,25 @@ CONJUNTOS_MAP = {
 CONJUNTOS = list(CONJUNTOS_MAP.keys())
 
 def debug(clock, msg):
-    print(f"[DEBUG][{clock.get()}] {msg}")
+    print(f"[DEPURAR][{clock.get()}] {msg}")
 
 def mostrar_combinacoes_testadas(clock, comprimento, conjunto_nome, tentativa, hash_tentativa):
     print(f"[{clock.get()}] Testando combinação: '{tentativa}' (comprimento={comprimento}, conjunto={conjunto_nome}) -> Hash: {hash_tentativa}")
 
-class BerkeleyClock:
+class RelogioBerkeley:
     def __init__(self):
-        self.time = time.time() + random.randint(-30, 30)
+        self.tempo = time.time() + random.randint(-30, 30)
 
     def tick(self, inc=1):
-        self.time += inc
-        return self.time
+        self.tempo += inc
+        return self.tempo
 
-    def set(self, new_time):
-        self.time = new_time
-        return self.time
+    def set(self, novo_tempo):
+        self.tempo = novo_tempo
+        return self.tempo
 
     def get(self):
-        return float(f"{self.time:.2f}")
+        return float(f"{self.tempo:.2f}")
 
 class GerenteDistribuido:
     def __init__(self, meu_ip, is_coordenador, clock):
@@ -59,13 +59,13 @@ class GerenteDistribuido:
         with self.lock:
             if ip not in self.lista_maquinas:
                 self.lista_maquinas.append(ip)
-                debug(self.clock, f"[MAQUINAS] Adicionada máquina {ip}")
+                debug(self.clock, f"[MAQUINAS] Máquina adicionada {ip}")
 
     def remover_maquina(self, ip):
         with self.lock:
             if ip in self.lista_maquinas:
                 self.lista_maquinas.remove(ip)
-                debug(self.clock, f"[MAQUINAS] Removida máquina {ip}")
+                debug(self.clock, f"[MAQUINAS] Máquina removida {ip}")
             self.tarefas.pop(ip, None)
 
     def replicar_lista(self, destino_ip):
@@ -135,9 +135,9 @@ class GerenteDistribuido:
             if self.proximo_conjunto >= len(CONJUNTOS):
                 self.proximo_conjunto = 0
                 self.proximo_comprimento += 1
-            debug(self.clock, f"[COORD-ELEIÇÃO] Restaurando progresso de tarefas: próximo comprimento={self.proximo_comprimento}, próximo conjunto={self.proximo_conjunto}")
+            debug(self.clock, f"[COORD-ELEIÇÃO] Restaurando progresso das tarefas: próximo comprimento={self.proximo_comprimento}, próximo conjunto={self.proximo_conjunto}")
 
-class BruteForceMD5(threading.Thread):
+class ForcaBrutaMD5(threading.Thread):
     def __init__(self, meu_ip, gerente, clock, alvo_hash, conjuntos, coordenador_ip, on_trab_coord=None):
         super().__init__(daemon=True)
         self.meu_ip = meu_ip
@@ -181,15 +181,15 @@ class BruteForceMD5(threading.Thread):
         debug(self.clock, f"[TRAB] Lista de máquinas: {self.gerente.get_lista_maquinas()}")
         while not self.sair and self.gerente.senha_encontrada is None:
             if self.meu_ip == self.coordenador_ip:
-                debug(self.clock, "[TRAB] Tornei-me coordenador, encerrando brute force trabalhador.")
+                debug(self.clock, "[TRAB] Tornei-me coordenador, encerrando operação de força bruta.")
                 break
             comprimento, conjunto_nome = self.pedir_tarefa_ao_coordenador()
             if comprimento is None:
                 if len(self.gerente.get_lista_maquinas()) == 1 and self.on_trab_coord:
-                    debug(self.clock, "[TRAB] Detected I am the only one left, becoming coordinator!")
+                    debug(self.clock, "[TRAB] Detectei que sou o único, tornando-me coordenador!")
                     self.on_trab_coord()
                 break
-            debug(self.clock, f"[BF] Testando senhas de comprimento={comprimento}, conjunto={conjunto_nome}")
+            debug(self.clock, f"[FB] Testando senhas de comprimento={comprimento}, conjunto={conjunto_nome}")
             conjunto = CONJUNTOS_MAP[conjunto_nome]
             achou = self._forca_bruta(comprimento, conjunto, conjunto_nome)
             self.gerente.finalizar_tarefa(self.meu_ip)
@@ -205,7 +205,7 @@ class BruteForceMD5(threading.Thread):
             h = hashlib.md5(s.encode()).hexdigest()
             mostrar_combinacoes_testadas(self.clock, comprimento, conjunto_nome, s, h)
             if h == alvo:
-                debug(self.clock, f"[BF] SENHA ENCONTRADA: '{s}' para comprimento={comprimento} e conjunto {conjunto}")
+                debug(self.clock, f"[FB] SENHA ENCONTRADA: '{s}' para comprimento={comprimento} e conjunto {conjunto}")
                 return s
         return None
 
@@ -227,7 +227,7 @@ class ServidorDistribuido:
         self.meu_ip = meu_ip
         self.coordenador_ip = coordenador_ip
         self.alvo_md5 = alvo_md5
-        self.clock = BerkeleyClock()
+        self.clock = RelogioBerkeley()
         self.is_coordenador = (self.meu_ip == self.coordenador_ip)
         self.gerente = GerenteDistribuido(meu_ip, self.is_coordenador, self.clock)
         self.senha_encontrada = None
@@ -250,7 +250,7 @@ class ServidorDistribuido:
         print(f"meu_ip={self.meu_ip}, coordenador_ip={self.coordenador_ip}, alvo_md5={self.alvo_md5}")
 
     def iniciar_brute_force_trabalhador(self):
-        self.brute_force = BruteForceMD5(
+        self.brute_force = ForcaBrutaMD5(
             meu_ip=self.meu_ip,
             gerente=self.gerente,
             clock=self.clock,
@@ -426,7 +426,7 @@ class ServidorDistribuido:
             elif cmd == "SENHA_ENCONTRADA":
                 senha = info.get("senha")
                 debug(self.clock, f"Senha encontrada: {senha}")
-                print("[TRAB] Senha encontrada, encerrando brute force.")
+                print("[TRAB] Senha encontrada, encerrando força bruta.")
                 self.senha_encontrada = senha
                 self.sair = True
                 self.gerente.senha_encontrada = senha
@@ -478,7 +478,7 @@ def get_meu_ip():
 
 def menu():
     print("="*60)
-    print(" Brute Force MD5 Distribuído - IFBA Sistemas Distribuídos")
+    print(" Força Bruta MD5 Distribuída")
     print("="*60)
     print("1 - Iniciar como Coordenador")
     print("2 - Iniciar como Trabalhador")
@@ -499,7 +499,7 @@ def main():
     elif escolha == "2":
         meu_ip = get_meu_ip()
         print(f"Seu IP detectado: {meu_ip}")
-        coord_ip = input("Digite IP do coordenador: ").strip()
+        coord_ip = input("Digite o IP do coordenador: ").strip()
         print("Conectando ao coordenador para receber o hash alvo...")
         servidor = ServidorDistribuido(meu_ip, coord_ip, None)
         while servidor.gerente.senha_encontrada is None:
