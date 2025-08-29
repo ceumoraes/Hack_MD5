@@ -46,7 +46,6 @@ class GerenteDistribuido:
         self.is_coordenador = is_coordenador
         self.clock = clock
         self.lamport = 0
-        # lista_maquinas = [{"ip":..., "lamport":...}]
         self.lista_maquinas = [{"ip": meu_ip, "lamport": self.lamport}]
         self.tarefas = {}
         self.lock = threading.Lock()
@@ -305,6 +304,7 @@ class ServidorDistribuido:
                 self.coordenador_ip = self.meu_ip
                 self.gerente.restaurar_progresso_tarefas()
                 self.anunciar_novo_coordenador()
+                threading.Thread(target=self._sincronizar_berkeley_periodicamente, daemon=True).start()
             elif not self._checar_coordenador():
                 debug(self.clock, "[ELEIÇÃO] Coordenador indisponível! Iniciando eleição...")
                 self._iniciar_eleicao()
@@ -333,6 +333,7 @@ class ServidorDistribuido:
             self.coordenador_ip = self.meu_ip
             self.gerente.restaurar_progresso_tarefas()
             self.anunciar_novo_coordenador()
+            threading.Thread(target=self._sincronizar_berkeley_periodicamente, daemon=True).start()
             if self.brute_force:
                 self.brute_force.sair = True
                 self.brute_force = None
@@ -416,7 +417,6 @@ class ServidorDistribuido:
             ip_novo = info.get("ip")
             lamport_novo = info.get("lamport", None)
             if cmd == "NOVO_MEMBRO":
-                # Só coordenador recebe NOVO_MEMBRO
                 self.gerente.lamport += 1
                 self.gerente.adicionar_maquina(ip_novo, self.gerente.lamport)
                 self.gerente.replicar_lista(ip_novo)
@@ -487,6 +487,7 @@ class ServidorDistribuido:
                 if self.is_coordenador:
                     self.gerente.restaurar_progresso_tarefas()
                     self.anunciar_novo_coordenador()
+                    threading.Thread(target=self._sincronizar_berkeley_periodicamente, daemon=True).start()
                     if self.brute_force:
                         self.brute_force.sair = True
                         self.brute_force = None
