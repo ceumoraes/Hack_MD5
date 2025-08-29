@@ -355,7 +355,7 @@ class ServidorDistribuido:
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                         s.settimeout(2)
-                        s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKLEY))
+                        s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKELEY))
                         data, _ = s.recvfrom(1024)
                         tempos[ip] = float(data.decode())
                 except: pass
@@ -371,7 +371,7 @@ class ServidorDistribuido:
                         else:
                             try:
                                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                                    s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKLEY))
+                                    s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKELEY))
                             except: pass
                     else:
                         debug(self.clock, f"[BERKELEY] IP {ip} não respondeu, ignorando ajuste de relógio.")
@@ -380,7 +380,7 @@ class ServidorDistribuido:
 
     def _servidor_udp_berkeley(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('', PORTA_UDP_BERKLEY))
+        sock.bind(('', PORTA_UDP_BERKELEY))
         while not self.sair:
             try:
                 data, addr = sock.recvfrom(1024)
