@@ -369,7 +369,7 @@ class ServidorDistribuido:
                 except: pass
             if tempos:
                 media = sum(tempos.values()) / len(tempos)
-                for ip in lista:
+                for ip in tempos.keys():
                     delta = media - tempos[ip]
                     if ip == self.meu_ip:
                         self.clock.set(media)
@@ -438,7 +438,7 @@ class ServidorDistribuido:
                 self.sair = True
                 self.gerente.senha_encontrada = senha
                 self._propagar_encerramento()
-                sys.exit(0)
+                # sys.exit(0) removido
             elif cmd == "PEDIR_HASH":
                 if self.is_coordenador:
                     msg = json.dumps({"cmd": "CONFIG_HASH", "hash": self.alvo_md5}).encode()
@@ -476,7 +476,7 @@ class ServidorDistribuido:
                 self.gerente.senha_encontrada = self.senha_encontrada
                 if self.brute_force:
                     self.brute_force.sair = True
-                sys.exit(0)
+                # sys.exit(0) removido
         except Exception as e:
             debug(self.clock, f"Erro ao tratar conexão: {e}")
         finally:
@@ -495,7 +495,7 @@ class ServidorDistribuido:
                     debug(self.clock, f"Falha ao propagar encerramento para {ip}: {e}")
         debug(self.clock, "[GLOBAL] Todos sinalizados para encerrar. Encerrando este processo agora.")
         self.sair = True
-        sys.exit(0)
+        # sys.exit(0) removido
 
 def get_meu_ip():
     try:
