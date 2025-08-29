@@ -7,10 +7,10 @@ import json
 import random
 
 PORTA_TCP = 12001
-PORTA_UDP_BERKLEY = 12002
+PORTA_UDP_BERKELEY = 12002
 TIMEOUT = 30
 CHECAGEM_COORDENADOR_INTERVALO = 5
-SINC_BERKLEY_INTERVALO = 10
+SINC_BERKELEY_INTERVALO = 10
 
 CONJUNTOS_MAP = {
     "digitos": "0123456789",
@@ -211,14 +211,13 @@ class ForcaBrutaMD5(threading.Thread):
 
     def _on_password_found(self, senha):
         debug(self.clock, f"[TRAB] Senha encontrada: {senha}")
-        for ip in self.gerente.get_lista_maquinas():
-            if ip != self.meu_ip:
-                msg = json.dumps({"cmd": "SENHA_ENCONTRADA", "senha": senha}).encode()
-                try:
-                    with socket.create_connection((ip, PORTA_TCP), TIMEOUT) as s:
-                        s.sendall(msg)
-                except Exception as e:
-                    debug(self.clock, f"[TRAB] Falha ao enviar SENHA_ENCONTRADA para {ip}: {e}")
+        # Envia apenas para o coordenador
+        msg = json.dumps({"cmd": "SENHA_ENCONTRADA", "senha": senha}).encode()
+        try:
+            with socket.create_connection((self.coordenador_ip, PORTA_TCP), TIMEOUT) as s:
+                s.sendall(msg)
+        except Exception as e:
+            debug(self.clock, f"[TRAB] Falha ao enviar SENHA_ENCONTRADA para coordenador: {e}")
         self.gerente.senha_encontrada = senha
         self.sair = True
 
@@ -348,39 +347,39 @@ class ServidorDistribuido:
 
     def _sincronizar_berkeley_periodicamente(self):
         while not self.sair:
-            time.sleep(SINC_BERKLEY_INTERVALO)
+            time.sleep(SINC_BERKELEY_INTERVALO)
             lista = self.gerente.get_lista_maquinas()
             tempos = {self.meu_ip: self.clock.get()}
             for ip in lista:
-                if ip in tempos:
-                    delta = media - tempos[ip]
-                    if ip == self.meu_ip:
-                        self.clock.set(media)
-                        debug(self.clock, f"[BERKELEY] Relógio ajustado para média {media:.2f}")
-                    else:
-                        try:
-                            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                                s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKLEY))
-                        except:
-                            pass
-                else:
-                    debug(self.clock, f"[BERKELEY] IP {ip} não respondeu, ignorando ajuste de relógio.")
+                if ip == self.meu_ip: continue
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                        s.settimeout(2)
+                        s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKELEY))
+                        data, _ = s.recvfrom(1024)
+                        tempos[ip] = float(data.decode())
+                except: pass
             if tempos:
                 media = sum(tempos.values()) / len(tempos)
                 for ip in lista:
-                    delta = media - tempos[ip]
-                    if ip == self.meu_ip:
-                        self.clock.set(media)
-                        debug(self.clock, f"[BERKELEY] Relógio ajustado para média {media:.2f}")
+                    if ip in tempos:
+                        delta = media - tempos[ip]
+                        if ip == self.meu_ip:
+                            self.clock.set(media)
+                            debug(self.clock, f"[BERKELEY] Relógio ajustado para média {media:.2f}")
+                        else:
+                            try:
+                                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                                    s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKELEY))
+                            except: pass
                     else:
-                        try:
-                            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                                s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKLEY))
-                        except: pass
+                        debug(self.clock, f"[BERKELEY] IP {ip} não respondeu, ignorando ajuste de relógio.")
+            else:
+                debug(self.clock, "[BERKELEY] Nenhum relógio disponível, pulando sincronização.")
 
     def _servidor_udp_berkeley(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('', PORTA_UDP_BERKLEY))
+        sock.bind(('', PORTA_UDP_BERKELEY))
         while not self.sair:
             try:
                 data, addr = sock.recvfrom(1024)
@@ -428,13 +427,34 @@ class ServidorDistribuido:
                             except: pass
             elif cmd == "LISTA_MAQUINAS":
                 self.gerente.atualizar_lista(info.get("lista", []))
+            elif cmd == "SENHA_ENCONTRADA" and self.is_coordenador:
+                senha = info.get("senha")
+                debug(self.clock, f"[COORD] Senha encontrada por trabalhador: {senha}")
+                self.senha_encontrada = senha
+                self.gerente.senha_encontrada = senha
+                # Broadcast encerramento para todos os IPs
+                msg_encerrar = json.dumps({"cmd": "ENCERRAR", "senha": senha}).encode()
+                for ip in self.gerente.get_lista_maquinas():
+                    try:
+                        with socket.create_connection((ip, PORTA_TCP), TIMEOUT) as s:
+                            s.sendall(msg_encerrar)
+                    except Exception as e:
+                        debug(self.clock, f"[COORD] Falha ao enviar ENCERRAR para {ip}: {e}")
             elif cmd == "SENHA_ENCONTRADA":
                 senha = info.get("senha")
                 debug(self.clock, f"Senha encontrada: {senha}")
                 print("[TRAB] Senha encontrada, encerrando força bruta.")
                 self.senha_encontrada = senha
-                self.sair = True
                 self.gerente.senha_encontrada = senha
+            elif cmd == "ENCERRAR":
+                senha = info.get("senha")
+                debug(self.clock, f"[ENCERRAR] Recebido comando para encerrar. Senha: {senha}")
+                self.senha_encontrada = senha
+                self.gerente.senha_encontrada = senha
+                self.sair = True
+                if self.brute_force:
+                    self.brute_force.sair = True
+                    self.brute_force = None
             elif cmd == "PEDIR_HASH":
                 if self.is_coordenador:
                     msg = json.dumps({"cmd": "CONFIG_HASH", "hash": self.alvo_md5}).encode()
