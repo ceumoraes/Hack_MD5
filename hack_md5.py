@@ -7,8 +7,10 @@ import json
 import random
 
 PORTA_TCP = 12001
+PORTA_UDP_BERKLEY = 12002
 TIMEOUT = 30
 CHECAGEM_COORDENADOR_INTERVALO = 5  # segundos
+SINC_BERKLEY_INTERVALO = 10         # segundos
 
 CONJUNTOS = [
     "digitos",
@@ -27,22 +29,27 @@ CONJUNTOS_MAP = {
     "imprimiveis": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
 }
 
-class LamportClock:
+class BerkeleyClock:
     def __init__(self):
-        self.timestamp = random.randint(0, 100)
-    def tick(self):
-        self.timestamp += 1
-        return self.timestamp
-    def update(self, received):
-        self.timestamp = max(self.timestamp, received) + 1
-        return self.timestamp
+        # Randomiza o tempo inicial para mostrar sincronização
+        self.time = time.time() + random.randint(-30, 30)
+
+    def tick(self, inc=1):
+        self.time += inc
+        return self.time
+
+    def set(self, new_time):
+        self.time = new_time
+        return self.time
+
     def get(self):
-        return self.timestamp
+        return float(f"{self.time:.2f}")
 
 class GerenteDistribuido:
-    def __init__(self, meu_ip, is_coordenador):
+    def __init__(self, meu_ip, is_coordenador, clock):
         self.meu_ip = meu_ip
         self.is_coordenador = is_coordenador
+        self.clock = clock
         self.lista_maquinas = [meu_ip]
         self.tarefas = {}
         self.lock = threading.Lock()
@@ -54,13 +61,13 @@ class GerenteDistribuido:
         with self.lock:
             if ip not in self.lista_maquinas:
                 self.lista_maquinas.append(ip)
-                print(f"[MAQUINAS] Adicionada máquina {ip}")
+                print(f"[DEBUG][{self.clock.get()}] [MAQUINAS] Adicionada máquina {ip}")
 
     def remover_maquina(self, ip):
         with self.lock:
             if ip in self.lista_maquinas:
                 self.lista_maquinas.remove(ip)
-                print(f"[MAQUINAS] Removida máquina {ip}")
+                print(f"[DEBUG][{self.clock.get()}] [MAQUINAS] Removida máquina {ip}")
             if ip in self.tarefas:
                 del self.tarefas[ip]
 
@@ -78,7 +85,7 @@ class GerenteDistribuido:
     def atualizar_lista(self, nova_lista):
         with self.lock:
             self.lista_maquinas = list(nova_lista)
-            print(f"[MAQUINAS] Lista atualizada: {self.lista_maquinas}")
+            print(f"[DEBUG][{self.clock.get()}] [MAQUINAS] Lista atualizada: {self.lista_maquinas}")
 
     def atribuir_tarefa(self, ip, conjuntos):
         with self.lock:
@@ -94,7 +101,7 @@ class GerenteDistribuido:
                     "conjunto": conjunto_nome,
                     "status": "em_andamento"
                 }
-                print(f"[DEBUG][COORD] Atribuindo tarefa para IP {ip}: comprimento={comprimento}, conjunto={conjunto_nome}")
+                print(f"[DEBUG][{self.clock.get()}] [COORD] Atribuindo tarefa para IP {ip}: comprimento={comprimento}, conjunto={conjunto_nome}")
                 self.proximo_conjunto += 1
                 if self.proximo_conjunto >= len(conjuntos):
                     self.proximo_conjunto = 0
@@ -107,6 +114,7 @@ class GerenteDistribuido:
         with self.lock:
             if ip in self.tarefas:
                 self.tarefas[ip]["status"] = "finalizado"
+                print(f"[DEBUG][{self.clock.get()}] [COORD] Tarefa finalizada para {ip}")
 
     def registrar_tarefa_andamento(self, ip, comprimento, conjunto_nome):
         with self.lock:
@@ -115,6 +123,7 @@ class GerenteDistribuido:
                 "conjunto": conjunto_nome,
                 "status": "em_andamento"
             }
+            print(f"[DEBUG][{self.clock.get()}] Registrando tarefa em andamento para {ip}: comprimento={comprimento}, conjunto={conjunto_nome}")
 
     def get_lista_maquinas(self):
         with self.lock:
@@ -140,19 +149,19 @@ class GerenteDistribuido:
             if self.proximo_conjunto >= len(CONJUNTOS):
                 self.proximo_conjunto = 0
                 self.proximo_comprimento += 1
-            print(f"[COORD-ELEIÇÃO] Restaurando progresso de tarefas: próximo comprimento={self.proximo_comprimento}, próximo conjunto={self.proximo_conjunto}")
+            print(f"[DEBUG][{self.clock.get()}] [COORD-ELEIÇÃO] Restaurando progresso de tarefas: próximo comprimento={self.proximo_comprimento}, próximo conjunto={self.proximo_conjunto}")
 
 class BruteForceMD5(threading.Thread):
-    def __init__(self, meu_ip, gerente, lamport, alvo_hash, conjuntos, coordenador_ip, on_trab_coord=None):
+    def __init__(self, meu_ip, gerente, clock, alvo_hash, conjuntos, coordenador_ip, on_trab_coord=None):
         super().__init__(daemon=True)
         self.meu_ip = meu_ip
         self.gerente = gerente
-        self.lamport = lamport
+        self.clock = clock
         self.alvo_hash = alvo_hash
         self.conjuntos = conjuntos
         self.coordenador_ip = coordenador_ip
         self.sair = False
-        self.on_trab_coord = on_trab_coord  # callback para promover a si mesmo a coordenador
+        self.on_trab_coord = on_trab_coord
 
     def pedir_tarefa_ao_coordenador(self):
         try:
@@ -170,11 +179,11 @@ class BruteForceMD5(threading.Thread):
                 comprimento = info["comprimento"]
                 conjunto_nome = info["conjunto"]
                 self.gerente.registrar_tarefa_andamento(self.meu_ip, comprimento, conjunto_nome)
-                print(f"[DEBUG] Tarefa recebida: comprimento={comprimento}, conjunto={conjunto_nome}")
+                print(f"[DEBUG][{self.clock.get()}] Tarefa recebida: comprimento={comprimento}, conjunto={conjunto_nome}")
                 return comprimento, conjunto_nome
             return None, None
         except Exception as e:
-            print(f"[TRAB] Erro ao pedir tarefa ao coordenador: {e}")
+            print(f"[DEBUG][{self.clock.get()}] [TRAB] Erro ao pedir tarefa ao coordenador: {e}")
         return None, None
 
     def notificar_finalizacao(self):
@@ -191,26 +200,25 @@ class BruteForceMD5(threading.Thread):
     def run(self):
         while self.alvo_hash is None:
             time.sleep(0.5)
-        print(f"[DEBUG] Hash alvo recebido: {self.alvo_hash}")
-        print(f"[DEBUG][TRAB] Lista de máquinas: {self.gerente.get_lista_maquinas()}")
+        print(f"[DEBUG][{self.clock.get()}] Hash alvo recebido: {self.alvo_hash}")
+        print(f"[DEBUG][{self.clock.get()}] [TRAB] Lista de máquinas: {self.gerente.get_lista_maquinas()}")
         while not self.sair:
             if self.gerente.senha_encontrada is not None:
                 break
             if self.meu_ip == self.coordenador_ip:
-                print("[TRAB] Tornei-me coordenador, encerrando brute force trabalhador.")
+                print(f"[DEBUG][{self.clock.get()}] [TRAB] Tornei-me coordenador, encerrando brute force trabalhador.")
                 break
             comprimento, conjunto_nome = self.pedir_tarefa_ao_coordenador()
-            # Checagem: se falhou pedir tarefa e está sozinho, promova-se (chame callback)
             if comprimento is None:
                 lista_maquinas = self.gerente.get_lista_maquinas()
                 if len(lista_maquinas) == 1 and lista_maquinas[0] == self.meu_ip and self.on_trab_coord is not None:
-                    print("[TRAB] Detected I am the only one left, becoming coordinator!")
+                    print(f"[DEBUG][{self.clock.get()}] [TRAB] Detected I am the only one left, becoming coordinator!")
                     self.on_trab_coord()
                     self.sair = True
                     break
-                print("[TRAB] Parando execução pois senha foi encontrada ou não há mais tarefas.")
+                print(f"[DEBUG][{self.clock.get()}] [TRAB] Parando execução pois senha foi encontrada ou não há mais tarefas.")
                 break
-            print(f"[BF] Testando senhas de comprimento={comprimento}, conjunto={conjunto_nome}")
+            print(f"[DEBUG][{self.clock.get()}] [BF] Testando senhas de comprimento={comprimento}, conjunto={conjunto_nome}")
             conjunto = CONJUNTOS_MAP[conjunto_nome]
             achou = self._forca_bruta(comprimento, conjunto)
             self.gerente.finalizar_tarefa(self.meu_ip)
@@ -221,19 +229,19 @@ class BruteForceMD5(threading.Thread):
 
     def _forca_bruta(self, comprimento, conjunto):
         alvo = self.alvo_hash.lower()
-        print(f"[DEBUG] [BF] Comprimento: {comprimento}, conjunto: {conjunto}")
+        print(f"[DEBUG][{self.clock.get()}] [BF] Comprimento: {comprimento}, conjunto: {conjunto}")
         for tup in itertools.product(conjunto, repeat=comprimento):
             s = ''.join(tup)
             h = hashlib.md5(s.encode()).hexdigest()
-            print(f"[DEBUG] Testando: {s} -> {h}")
+            print(f"[DEBUG][{self.clock.get()}] Testando: {s} -> {h}")
             if h == alvo:
-                print(f"\n[BF] SENHA ENCONTRADA: '{s}' para comprimento={comprimento} e conjunto {conjunto}")
+                print(f"\n[DEBUG][{self.clock.get()}] [BF] SENHA ENCONTRADA: '{s}' para comprimento={comprimento} e conjunto {conjunto}")
                 return s
         print("\033[2K\r", end="")
         return None
 
     def _on_password_found(self, senha):
-        print(f"[TRAB] Senha encontrada: {senha}")
+        print(f"[DEBUG][{self.clock.get()}] [TRAB] Senha encontrada: {senha}")
         for ip in self.gerente.get_lista_maquinas():
             if ip != self.meu_ip:
                 try:
@@ -244,7 +252,7 @@ class BruteForceMD5(threading.Thread):
                     s.sendall(msg)
                     s.close()
                 except Exception as e:
-                    print(f"[TRAB] Falha ao enviar SENHA_ENCONTRADA para {ip}: {e}")
+                    print(f"[DEBUG][{self.clock.get()}] [TRAB] Falha ao enviar SENHA_ENCONTRADA para {ip}: {e}")
         self.gerente.senha_encontrada = senha
         self.sair = True
 
@@ -253,15 +261,19 @@ class ServidorDistribuido:
         self.meu_ip = meu_ip
         self.coordenador_ip = coordenador_ip
         self.alvo_md5 = alvo_md5
-        self.lamport = LamportClock()
+        self.clock = BerkeleyClock()
         self.is_coordenador = (self.meu_ip == self.coordenador_ip)
-        self.gerente = GerenteDistribuido(meu_ip, self.is_coordenador)
+        self.gerente = GerenteDistribuido(meu_ip, self.is_coordenador, self.clock)
         self.senha_encontrada = None
         self.sair = False
         self.brute_force = None
 
         threading.Thread(target=self._servidor_tcp, daemon=True).start()
         threading.Thread(target=self._verificar_coordenador_periodicamente, daemon=True).start()
+        threading.Thread(target=self._servidor_udp_berkeley, daemon=True).start()
+
+        if self.is_coordenador:
+            threading.Thread(target=self._sincronizar_berkeley_periodicamente, daemon=True).start()
 
         if not self.is_coordenador:
             self.conectar_ao_sistema()
@@ -270,18 +282,18 @@ class ServidorDistribuido:
                 time.sleep(0.5)
                 wait_count += 1
                 if wait_count % 10 == 0:
-                    print("Trabalhador aguardando recebimento do hash...")
-            print(f"Trabalhador vai iniciar brute force com hash: {self.alvo_md5}")
+                    print(f"[DEBUG][{self.clock.get()}] Trabalhador aguardando recebimento do hash...")
+            print(f"[DEBUG][{self.clock.get()}] Trabalhador vai iniciar brute force com hash: {self.alvo_md5}")
             self.iniciar_brute_force_trabalhador()
 
-        print(f"Inicializando ServidorDistribuido ({'COORDENADOR' if self.is_coordenador else 'TRABALHADOR'})")
+        print(f"[DEBUG][{self.clock.get()}] Inicializando ServidorDistribuido ({'COORDENADOR' if self.is_coordenador else 'TRABALHADOR'})")
         print(f"meu_ip={self.meu_ip}, coordenador_ip={self.coordenador_ip}, alvo_md5={self.alvo_md5}")
 
     def iniciar_brute_force_trabalhador(self):
         self.brute_force = BruteForceMD5(
             meu_ip=self.meu_ip,
             gerente=self.gerente,
-            lamport=self.lamport,
+            clock=self.clock,
             alvo_hash=self.alvo_md5,
             conjuntos=CONJUNTOS,
             coordenador_ip=self.coordenador_ip,
@@ -290,12 +302,11 @@ class ServidorDistribuido:
         self.brute_force.start()
 
     def promover_a_coordenador(self):
-        # Usa a mesma lógica de eleição da thread de verificação
-        print("[PROMOÇÃO] Promovendo-me a coordenador por detecção no trabalhador...")
+        print(f"[DEBUG][{self.clock.get()}] [PROMOÇÃO] Promovendo-me a coordenador por detecção no trabalhador...")
         self._iniciar_eleicao()
 
     def conectar_ao_sistema(self):
-        print("Solicitando entrada no sistema...")
+        print(f"[DEBUG][{self.clock.get()}] Solicitando entrada no sistema...")
         try:
             msg = json.dumps({"cmd": "NOVO_MEMBRO", "ip": self.meu_ip}).encode()
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -304,7 +315,7 @@ class ServidorDistribuido:
             s.sendall(msg)
             s.close()
         except Exception as e:
-            print(f"Falha ao conectar ao coordenador: {e}")
+            print(f"[DEBUG][{self.clock.get()}] Falha ao conectar ao coordenador: {e}")
         try:
             msg = json.dumps({"cmd": "PEDIR_HASH", "ip": self.meu_ip}).encode()
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -315,10 +326,10 @@ class ServidorDistribuido:
             info = json.loads(resposta.decode())
             if info.get("cmd") == "CONFIG_HASH":
                 self.alvo_md5 = info.get("hash")
-                print(f"Hash alvo recebido do coordenador: {self.alvo_md5}")
+                print(f"[DEBUG][{self.clock.get()}] Hash alvo recebido do coordenador: {self.alvo_md5}")
             s.close()
         except Exception as e:
-            print(f"Falha ao pedir hash ao coordenador: {e}")
+            print(f"[DEBUG][{self.clock.get()}] Falha ao pedir hash ao coordenador: {e}")
 
     def _verificar_coordenador_periodicamente(self):
         while not self.sair and self.gerente.senha_encontrada is None:
@@ -327,10 +338,10 @@ class ServidorDistribuido:
                 break
             lista = self.gerente.get_lista_maquinas()
             if len(lista) == 1 and lista[0] == self.meu_ip and not self.is_coordenador:
-                print("[ELEIÇÃO] Só eu restando, assumindo como coordenador!")
+                print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Só eu restando, assumindo como coordenador!")
                 self._iniciar_eleicao()
             elif not self._checar_coordenador():
-                print("[ELEIÇÃO] Coordenador indisponível! Iniciando eleição...")
+                print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Coordenador indisponível! Iniciando eleição...")
                 self._iniciar_eleicao()
 
     def _checar_coordenador(self):
@@ -351,11 +362,11 @@ class ServidorDistribuido:
             self.gerente.remover_maquina(self.coordenador_ip)
             lista = self.gerente.get_lista_maquinas()
         if not lista:
-            print("[ELEIÇÃO] Nenhuma máquina disponível para ser coordenador.")
+            print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Nenhuma máquina disponível para ser coordenador.")
             return
         novo_coord = lista[0]
         if novo_coord == self.meu_ip:
-            print("[ELEIÇÃO] Eu sou o novo coordenador!")
+            print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Eu sou o novo coordenador!")
             self.is_coordenador = True
             self.coordenador_ip = self.meu_ip
             self.gerente.restaurar_progresso_tarefas()
@@ -369,23 +380,76 @@ class ServidorDistribuido:
                         s.sendall(msg)
                         s.close()
                     except Exception as e:
-                        print(f"[ELEIÇÃO] Falha ao notificar {ip}: {e}")
+                        print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Falha ao notificar {ip}: {e}")
             if self.brute_force:
                 self.brute_force.sair = True
                 self.brute_force = None
         else:
             self.is_coordenador = False
             self.coordenador_ip = novo_coord
-            print(f"[ELEIÇÃO] Novo coordenador é {novo_coord}")
+            print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Novo coordenador é {novo_coord}")
             if self.brute_force:
                 self.brute_force.coordenador_ip = self.coordenador_ip
+
+    def _sincronizar_berkeley_periodicamente(self):
+        while not self.sair:
+            time.sleep(SINC_BERKLEY_INTERVALO)
+            lista = self.gerente.get_lista_maquinas()
+            tempos = {self.meu_ip: self.clock.get()}
+            for ip in lista:
+                if ip == self.meu_ip:
+                    continue
+                try:
+                    # Solicita tempo dos trabalhadores via UDP
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.settimeout(2)
+                    s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKLEY))
+                    data, _ = s.recvfrom(1024)
+                    tempos[ip] = float(data.decode())
+                    s.close()
+                except Exception:
+                    pass
+            if tempos:
+                media = sum(tempos.values()) / len(tempos)
+                for ip in lista:
+                    delta = media - tempos[ip]
+                    if ip == self.meu_ip:
+                        self.clock.set(media)
+                        print(f"[DEBUG][{self.clock.get()}] [BERKELEY] Relógio ajustado para média {media:.2f}")
+                    else:
+                        try:
+                            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKLEY))
+                            s.close()
+                        except Exception:
+                            pass
+
+    def _servidor_udp_berkeley(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', PORTA_UDP_BERKLEY))
+        while not self.sair:
+            try:
+                data, addr = sock.recvfrom(1024)
+                ip = addr[0]
+                msg = data.decode()
+                if msg == "GET_TIME":
+                    sock.sendto(str(self.clock.get()).encode(), addr)
+                else:
+                    try:
+                        delta = float(msg)
+                        self.clock.set(self.clock.get() + delta)
+                        print(f"[DEBUG][{self.clock.get()}] [BERKELEY] Relógio ajustado por delta {delta:.2f}")
+                    except Exception:
+                        pass
+            except Exception:
+                continue
 
     def _servidor_tcp(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(('', PORTA_TCP))
         sock.listen(30)
-        print(f"[TCP] Servidor escutando em {self.meu_ip}:{PORTA_TCP}")
+        print(f"[DEBUG][{self.clock.get()}] [TCP] Servidor escutando em {self.meu_ip}:{PORTA_TCP}")
         while not self.sair:
             try:
                 conn, addr = sock.accept()
@@ -423,7 +487,7 @@ class ServidorDistribuido:
                 self.gerente.atualizar_lista(lista)
             elif cmd == "SENHA_ENCONTRADA":
                 senha = info.get("senha")
-                print(f"Senha encontrada: {senha}")
+                print(f"[DEBUG][{self.clock.get()}] Senha encontrada: {senha}")
                 print("[TRAB] Senha encontrada, encerrando brute force.")
                 self.senha_encontrada = senha
                 self.sair = True
@@ -437,7 +501,7 @@ class ServidorDistribuido:
                         pass
             elif cmd == "CONFIG_HASH":
                 self.alvo_md5 = info.get("hash")
-                print(f"Hash alvo recebido do coordenador: {self.alvo_md5}")
+                print(f"[DEBUG][{self.clock.get()}] Hash alvo recebido do coordenador: {self.alvo_md5}")
             elif cmd == "PEDIR_TAREFA":
                 if self.is_coordenador:
                     ip_trab = info.get("ip")
@@ -461,7 +525,7 @@ class ServidorDistribuido:
                     self.gerente.finalizar_tarefa(ip_trab)
             elif cmd == "NOVO_COORDENADOR":
                 novo_coord_ip = info.get("ip")
-                print(f"[ELEIÇÃO] Recebido NOVO_COORDENADOR: {novo_coord_ip}")
+                print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Recebido NOVO_COORDENADOR: {novo_coord_ip}")
                 self.coordenador_ip = novo_coord_ip
                 self.is_coordenador = (self.meu_ip == self.coordenador_ip)
                 if self.is_coordenador:
@@ -473,7 +537,7 @@ class ServidorDistribuido:
                     if self.brute_force:
                         self.brute_force.coordenador_ip = self.coordenador_ip
         except Exception as e:
-            print(f"Erro ao tratar conexão: {e}")
+            print(f"[DEBUG][{self.clock.get()}] Erro ao tratar conexão: {e}")
         finally:
             try:
                 conn.close()
