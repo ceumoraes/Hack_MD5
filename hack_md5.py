@@ -23,7 +23,7 @@ CONJUNTOS_MAP = {
 CONJUNTOS = list(CONJUNTOS_MAP.keys())
 
 def debug(clock, msg):
-    print(f"[DEPURAR][{clock.get()}] {msg}")
+    print(f"[DEBUG][{clock.get()}] {msg}")
 
 def mostrar_combinacoes_testadas(clock, comprimento, conjunto_nome, tentativa, hash_tentativa):
     print(f"[{clock.get()}] Testando combinação: '{tentativa}' (comprimento={comprimento}, conjunto={conjunto_nome}) -> Hash: {hash_tentativa}")
