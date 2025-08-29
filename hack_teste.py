@@ -31,15 +31,12 @@ def mostrar_combinacoes_testadas(clock, comprimento, conjunto_nome, tentativa, h
 class RelogioBerkeley:
     def __init__(self):
         self.tempo = time.time() + random.randint(-30, 30)
-
     def tick(self, inc=1):
         self.tempo += inc
         return self.tempo
-
     def set(self, novo_tempo):
         self.tempo = novo_tempo
         return self.tempo
-
     def get(self):
         return float(f"{self.tempo:.2f}")
 
@@ -48,24 +45,25 @@ class GerenteDistribuido:
         self.meu_ip = meu_ip
         self.is_coordenador = is_coordenador
         self.clock = clock
-        self.lista_maquinas = [meu_ip]
+        self.lamport = 0
+        # lista_maquinas = [{"ip":..., "lamport":...}]
+        self.lista_maquinas = [{"ip": meu_ip, "lamport": self.lamport}]
         self.tarefas = {}
         self.lock = threading.Lock()
         self.proximo_comprimento = 1
         self.proximo_conjunto = 0
         self.senha_encontrada = None
 
-    def adicionar_maquina(self, ip):
+    def adicionar_maquina(self, ip, lamport):
         with self.lock:
-            if ip not in self.lista_maquinas:
-                self.lista_maquinas.append(ip)
-                debug(self.clock, f"[MAQUINAS] Máquina adicionada {ip}")
+            if not any(m['ip'] == ip for m in self.lista_maquinas):
+                self.lista_maquinas.append({"ip": ip, "lamport": lamport})
+                debug(self.clock, f"[MAQUINAS] Máquina adicionada {ip} com lamport {lamport}")
 
     def remover_maquina(self, ip):
         with self.lock:
-            if ip in self.lista_maquinas:
-                self.lista_maquinas.remove(ip)
-                debug(self.clock, f"[MAQUINAS] Máquina removida {ip}")
+            self.lista_maquinas = [m for m in self.lista_maquinas if m['ip'] != ip]
+            debug(self.clock, f"[MAQUINAS] Máquina removida {ip}")
             self.tarefas.pop(ip, None)
 
     def replicar_lista(self, destino_ip):
@@ -211,7 +209,6 @@ class ForcaBrutaMD5(threading.Thread):
 
     def _on_password_found(self, senha):
         debug(self.clock, f"[TRAB] Senha encontrada: {senha}")
-        # Envia apenas para o coordenador
         msg = json.dumps({"cmd": "SENHA_ENCONTRADA", "senha": senha}).encode()
         try:
             with socket.create_connection((self.coordenador_ip, PORTA_TCP), TIMEOUT) as s:
@@ -267,7 +264,8 @@ class ServidorDistribuido:
     def anunciar_novo_coordenador(self):
         debug(self.clock, "Anunciando para todas as máquinas que sou o novo coordenador!")
         msg = json.dumps({"cmd": "NOVO_COORDENADOR", "ip": self.meu_ip}).encode()
-        for ip in self.gerente.get_lista_maquinas():
+        for m in self.gerente.get_lista_maquinas():
+            ip = m['ip']
             if ip != self.meu_ip:
                 try:
                     with socket.create_connection((ip, PORTA_TCP), 5) as s:
@@ -301,7 +299,7 @@ class ServidorDistribuido:
             if self.sair or self.gerente.senha_encontrada is not None:
                 break
             lista = self.gerente.get_lista_maquinas()
-            if len(lista) == 1 and lista[0] == self.meu_ip and not self.is_coordenador:
+            if len(lista) == 1 and lista[0]['ip'] == self.meu_ip and not self.is_coordenador:
                 debug(self.clock, "[ELEIÇÃO] Só eu restando, assumindo como coordenador!")
                 self.is_coordenador = True
                 self.coordenador_ip = self.meu_ip
@@ -322,14 +320,14 @@ class ServidorDistribuido:
 
     def _iniciar_eleicao(self):
         lista = self.gerente.get_lista_maquinas()
-        if self.coordenador_ip in lista and self.coordenador_ip != self.meu_ip:
+        if self.coordenador_ip in [m['ip'] for m in lista] and self.coordenador_ip != self.meu_ip:
             self.gerente.remover_maquina(self.coordenador_ip)
             lista = self.gerente.get_lista_maquinas()
         if not lista:
             debug(self.clock, "[ELEIÇÃO] Nenhuma máquina disponível para ser coordenador.")
             return
-        novo_coord = lista[0]
-        if novo_coord == self.meu_ip:
+        novo_coord = min(lista, key=lambda m: m['lamport'])['ip']
+        if self.meu_ip == novo_coord:
             debug(self.clock, "[ELEIÇÃO] Eu sou o novo coordenador!")
             self.is_coordenador = True
             self.coordenador_ip = self.meu_ip
@@ -350,18 +348,20 @@ class ServidorDistribuido:
             time.sleep(SINC_BERKELEY_INTERVALO)
             lista = self.gerente.get_lista_maquinas()
             tempos = {self.meu_ip: self.clock.get()}
-            for ip in lista:
+            for m in lista:
+                ip = m['ip']
                 if ip == self.meu_ip: continue
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                         s.settimeout(2)
-                        s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKELEY))
+                        s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKLEY))
                         data, _ = s.recvfrom(1024)
                         tempos[ip] = float(data.decode())
                 except: pass
             if tempos:
                 media = sum(tempos.values()) / len(tempos)
-                for ip in lista:
+                for m in lista:
+                    ip = m['ip']
                     if ip in tempos:
                         delta = media - tempos[ip]
                         if ip == self.meu_ip:
@@ -370,7 +370,7 @@ class ServidorDistribuido:
                         else:
                             try:
                                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                                    s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKELEY))
+                                    s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKLEY))
                             except: pass
                     else:
                         debug(self.clock, f"[BERKELEY] IP {ip} não respondeu, ignorando ajuste de relógio.")
@@ -379,7 +379,7 @@ class ServidorDistribuido:
 
     def _servidor_udp_berkeley(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('', PORTA_UDP_BERKELEY))
+        sock.bind(('', PORTA_UDP_BERKLEY))
         while not self.sair:
             try:
                 data, addr = sock.recvfrom(1024)
@@ -414,17 +414,23 @@ class ServidorDistribuido:
             info = json.loads(data.decode())
             cmd = info.get("cmd")
             ip_novo = info.get("ip")
-            if cmd in ["NOVO_MEMBRO", "NOVO_MEMBRO_PROPAGADO"]:
-                self.gerente.adicionar_maquina(ip_novo)
-                if cmd == "NOVO_MEMBRO":
-                    self.gerente.replicar_lista(ip_novo)
-                    msg = json.dumps({"cmd": "NOVO_MEMBRO_PROPAGADO", "ip": ip_novo}).encode()
-                    for ip in self.gerente.get_lista_maquinas():
-                        if ip != self.meu_ip and ip != ip_novo:
-                            try:
-                                with socket.create_connection((ip, PORTA_TCP), TIMEOUT) as s:
-                                    s.sendall(msg)
-                            except: pass
+            lamport_novo = info.get("lamport", None)
+            if cmd == "NOVO_MEMBRO":
+                # Só coordenador recebe NOVO_MEMBRO
+                self.gerente.lamport += 1
+                self.gerente.adicionar_maquina(ip_novo, self.gerente.lamport)
+                self.gerente.replicar_lista(ip_novo)
+                msg = json.dumps({"cmd": "NOVO_MEMBRO_PROPAGADO", "ip": ip_novo, "lamport": self.gerente.lamport}).encode()
+                for m in self.gerente.get_lista_maquinas():
+                    ip = m['ip']
+                    if ip != self.meu_ip and ip != ip_novo:
+                        try:
+                            with socket.create_connection((ip, PORTA_TCP), TIMEOUT) as s:
+                                s.sendall(msg)
+                        except: pass
+            elif cmd == "NOVO_MEMBRO_PROPAGADO":
+                if lamport_novo is not None:
+                    self.gerente.adicionar_maquina(ip_novo, lamport_novo)
             elif cmd == "LISTA_MAQUINAS":
                 self.gerente.atualizar_lista(info.get("lista", []))
             elif cmd == "SENHA_ENCONTRADA" and self.is_coordenador:
@@ -432,9 +438,9 @@ class ServidorDistribuido:
                 debug(self.clock, f"[COORD] Senha encontrada por trabalhador: {senha}")
                 self.senha_encontrada = senha
                 self.gerente.senha_encontrada = senha
-                # Broadcast encerramento para todos os IPs
                 msg_encerrar = json.dumps({"cmd": "ENCERRAR", "senha": senha}).encode()
-                for ip in self.gerente.get_lista_maquinas():
+                for m in self.gerente.get_lista_maquinas():
+                    ip = m['ip']
                     try:
                         with socket.create_connection((ip, PORTA_TCP), TIMEOUT) as s:
                             s.sendall(msg_encerrar)
