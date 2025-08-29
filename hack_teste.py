@@ -271,6 +271,11 @@ class ServidorDistribuido:
                         s.sendall(msg)
                 except Exception as e:
                     debug(self.clock, f"Falha ao notificar {ip}: {e}")
+        # Propague lista para todos após eleição
+        for m in self.gerente.get_lista_maquinas():
+            ip = m['ip']
+            if ip != self.meu_ip:
+                self.gerente.replicar_lista(ip)
 
     def conectar_ao_sistema(self):
         debug(self.clock, "Solicitando entrada no sistema...")
@@ -433,6 +438,9 @@ class ServidorDistribuido:
                     self.gerente.adicionar_maquina(ip_novo, lamport_novo)
             elif cmd == "LISTA_MAQUINAS":
                 self.gerente.atualizar_lista(info.get("lista", []))
+            elif cmd == "PEDIR_LISTA" and self.is_coordenador:
+                msg = json.dumps({"cmd": "LISTA_MAQUINAS", "lista": self.gerente.get_lista_maquinas()}).encode()
+                conn.sendall(msg)
             elif cmd == "SENHA_ENCONTRADA" and self.is_coordenador:
                 senha = info.get("senha")
                 debug(self.clock, f"[COORD] Senha encontrada por trabalhador: {senha}")
@@ -484,14 +492,26 @@ class ServidorDistribuido:
                 debug(self.clock, f"[ELEIÇÃO] Recebido NOVO_COORDENADOR: {novo_coord_ip}")
                 self.coordenador_ip = novo_coord_ip
                 self.is_coordenador = (self.meu_ip == self.coordenador_ip)
-                if self.is_coordenador:
+                # Solicita lista ao novo coordenador se não for coordenador
+                if not self.is_coordenador:
+                    try:
+                        with socket.create_connection((self.coordenador_ip, PORTA_TCP), 5) as s:
+                            pedir_lista = json.dumps({"cmd": "PEDIR_LISTA", "ip": self.meu_ip}).encode()
+                            s.sendall(pedir_lista)
+                            resposta = s.recv(4096)
+                            info_lista = json.loads(resposta.decode())
+                            if info_lista.get("cmd") == "LISTA_MAQUINAS":
+                                self.gerente.atualizar_lista(info_lista.get("lista", []))
+                    except Exception as e:
+                        debug(self.clock, f"Falha ao pedir lista ao novo coordenador: {e}")
+                else:
                     self.gerente.restaurar_progresso_tarefas()
                     self.anunciar_novo_coordenador()
                     threading.Thread(target=self._sincronizar_berkeley_periodicamente, daemon=True).start()
                     if self.brute_force:
                         self.brute_force.sair = True
                         self.brute_force = None
-                elif self.brute_force:
+                if self.brute_force:
                     self.brute_force.coordenador_ip = self.coordenador_ip
         except Exception as e:
             debug(self.clock, f"Erro ao tratar conexão: {e}")
