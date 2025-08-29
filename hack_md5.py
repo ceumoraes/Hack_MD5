@@ -49,6 +49,7 @@ class GerenteDistribuido:
         self.is_coordenador = is_coordenador
         self.clock = clock
         self.lista_maquinas = [meu_ip]
+        self.ordem_entrada = {meu_ip: time.time()}  # Novo: registra o momento que cada máquina entrou
         self.tarefas = {}
         self.lock = threading.Lock()
         self.proximo_comprimento = 1
@@ -59,12 +60,14 @@ class GerenteDistribuido:
         with self.lock:
             if ip not in self.lista_maquinas:
                 self.lista_maquinas.append(ip)
+                self.ordem_entrada[ip] = time.time()  # Registra o horário de entrada
                 debug(self.clock, f"[MAQUINAS] Máquina adicionada {ip}")
 
     def remover_maquina(self, ip):
         with self.lock:
             if ip in self.lista_maquinas:
                 self.lista_maquinas.remove(ip)
+                self.ordem_entrada.pop(ip, None)  # Remove também da ordem
                 debug(self.clock, f"[MAQUINAS] Máquina removida {ip}")
             self.tarefas.pop(ip, None)
 
@@ -79,6 +82,9 @@ class GerenteDistribuido:
     def atualizar_lista(self, nova_lista):
         with self.lock:
             self.lista_maquinas = list(nova_lista)
+            # Mantém apenas os IPs com registro na ordem ou adiciona novos com timestamp atual
+            now = time.time()
+            self.ordem_entrada = {ip: self.ordem_entrada.get(ip, now) for ip in self.lista_maquinas}
             debug(self.clock, f"[MAQUINAS] Lista atualizada: {self.lista_maquinas}")
 
     def atribuir_tarefa(self, ip, conjuntos):
@@ -121,6 +127,11 @@ class GerenteDistribuido:
     def get_lista_maquinas(self):
         with self.lock:
             return list(self.lista_maquinas)
+
+    def get_lista_maquinas_ordenada(self):
+        with self.lock:
+            # Ordena pelo timestamp de entrada (mais antigo primeiro)
+            return [ip for ip, _ in sorted(self.ordem_entrada.items(), key=lambda x: x[1])]
 
     def restaurar_progresso_tarefas(self):
         with self.lock:
@@ -302,12 +313,24 @@ class ServidorDistribuido:
             if self.sair or self.gerente.senha_encontrada is not None:
                 break
             lista = self.gerente.get_lista_maquinas()
-            if len(lista) == 1 and lista[0] == self.meu_ip and not self.is_coordenador:
-                debug(self.clock, "[ELEIÇÃO] Só eu restando, assumindo como coordenador!")
-                self.is_coordenador = True
-                self.coordenador_ip = self.meu_ip
-                self.gerente.restaurar_progresso_tarefas()
-                self.anunciar_novo_coordenador()
+            # Corrigido: só promove se for o primeiro a entrar
+            ordenada = self.gerente.get_lista_maquinas_ordenada()
+            if not self.is_coordenador and (
+                self.coordenador_ip not in lista or self.coordenador_ip == self.meu_ip
+            ):
+                novo_coord = ordenada[0] if ordenada else self.meu_ip
+                if novo_coord == self.meu_ip:
+                    debug(self.clock, "[ELEIÇÃO] Eu sou o novo coordenador (ordem de entrada)!")
+                    self.is_coordenador = True
+                    self.coordenador_ip = self.meu_ip
+                    self.gerente.restaurar_progresso_tarefas()
+                    self.anunciar_novo_coordenador()
+                else:
+                    debug(self.clock, f"[ELEIÇÃO] Novo coordenador é {novo_coord}")
+                    self.is_coordenador = False
+                    self.coordenador_ip = novo_coord
+                    if self.brute_force:
+                        self.brute_force.coordenador_ip = self.coordenador_ip
             elif not self._checar_coordenador():
                 debug(self.clock, "[ELEIÇÃO] Coordenador indisponível! Iniciando eleição...")
                 self._iniciar_eleicao()
@@ -329,9 +352,10 @@ class ServidorDistribuido:
         if not lista:
             debug(self.clock, "[ELEIÇÃO] Nenhuma máquina disponível para ser coordenador.")
             return
-        novo_coord = lista[0]
+        ordenada = self.gerente.get_lista_maquinas_ordenada()
+        novo_coord = ordenada[0]
         if novo_coord == self.meu_ip:
-            debug(self.clock, "[ELEIÇÃO] Eu sou o novo coordenador!")
+            debug(self.clock, "[ELEIÇÃO] Eu sou o novo coordenador (ordem de entrada)!")
             self.is_coordenador = True
             self.coordenador_ip = self.meu_ip
             self.gerente.restaurar_progresso_tarefas()
