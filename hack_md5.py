@@ -1,3 +1,4 @@
+# Importações
 import threading
 import socket
 import time
@@ -6,8 +7,9 @@ import itertools
 import json
 import random
 
+# Configurações iniciais
 PORTA_TCP = 12001
-PORTA_UDP_BERKLEY = 12002
+# PORTA_UDP_BERKLEY = 12002 --> Comentei porque não estamos utilizando
 TIMEOUT = 30
 
 CONJUNTOS = {
@@ -19,17 +21,22 @@ CONJUNTOS = {
     "imprimiveis": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
 }
 
+
 class LamportClock:
     def __init__(self):
         self.timestamp = random.randint(0, 100)
+
     def tick(self):
         self.timestamp += 1
         return self.timestamp
+    
     def update(self, received):
         self.timestamp = max(self.timestamp, received) + 1
         return self.timestamp
+    
     def get(self):
         return self.timestamp
+
 
 class GerenteDistribuido:
     def __init__(self, meu_ip, is_coordenador):
@@ -76,6 +83,7 @@ class GerenteDistribuido:
         with self.lock:
             if self.senha_encontrada is not None:
                 return None, None
+            
             tarefa = self.tarefas.get(ip)
             if tarefa is None or tarefa.get("status") == "finalizado":
                 comprimento = self.proximo_comprimento
@@ -87,6 +95,7 @@ class GerenteDistribuido:
                     "status": "em_andamento"
                 }
                 print(f"[DEBUG][COORD] Atribuindo tarefa para IP {ip}: comprimento={comprimento}, conjunto={conjunto_nome}")
+
                 self.proximo_conjunto += 1
                 if self.proximo_conjunto >= len(conjuntos):
                     self.proximo_conjunto = 0
@@ -107,6 +116,7 @@ class GerenteDistribuido:
     def get_tarefas(self):
         with self.lock:
             return dict(self.tarefas)
+
 
 class BruteForceMD5(threading.Thread):
     def __init__(self, meu_ip, gerente, lamport, alvo_hash, conjuntos, coordenador_ip):
@@ -129,11 +139,13 @@ class BruteForceMD5(threading.Thread):
             resposta = s.recv(4096)
             info = json.loads(resposta.decode())
             s.close()
+
             if info.get("cmd") == "TAREFA_ASSIGNADA":
                 comprimento = info["comprimento"]
                 conjunto_nome = info["conjunto"]
                 print(f"[DEBUG] Tarefa recebida: comprimento={comprimento}, conjunto={conjunto_nome}")
                 return comprimento, conjunto_nome
+            
             return None, None
         except Exception as e:
             print(f"[TRAB] Erro ao pedir tarefa ao coordenador: {e}")
@@ -155,13 +167,16 @@ class BruteForceMD5(threading.Thread):
             time.sleep(0.5)
         print(f"[DEBUG] Hash alvo recebido: {self.alvo_hash}")
         print(f"[DEBUG][TRAB] Lista de máquinas: {self.gerente.get_lista_maquinas()}")
+
         while not self.sair:
             if self.gerente.senha_encontrada is not None:
                 break
+
             comprimento, conjunto_nome = self.pedir_tarefa_ao_coordenador()
             if self.sair or comprimento is None:
                 print("[TRAB] Parando execução pois senha foi encontrada ou não há mais tarefas.")
                 break
+
             print(f"[BF] Testando senhas de comprimento={comprimento}, conjunto={conjunto_nome}")
             conjunto = CONJUNTOS[conjunto_nome]
             achou = self._forca_bruta(comprimento, conjunto)
@@ -199,6 +214,7 @@ class BruteForceMD5(threading.Thread):
         self.gerente.senha_encontrada = senha
         self.sair = True
 
+
 class ServidorDistribuido:
     def __init__(self, meu_ip, coordenador_ip, alvo_md5):
         self.meu_ip = meu_ip
@@ -220,6 +236,7 @@ class ServidorDistribuido:
                 wait_count += 1
                 if wait_count % 10 == 0:
                     print("Trabalhador aguardando recebimento do hash...")
+
             conjuntos = ["digitos", "minusculas", "maiusculas", "letras", "minusculasdigitos", "imprimiveis"]
             print(f"Trabalhador vai iniciar brute force com hash: {self.alvo_md5}")
             self.brute_force = BruteForceMD5(
@@ -348,6 +365,7 @@ class ServidorDistribuido:
             except Exception:
                 pass
 
+
 def get_meu_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -358,6 +376,7 @@ def get_meu_ip():
     except Exception:
         return "127.0.0.1"
 
+
 def menu():
     print("="*60)
     print(" Brute Force MD5 Distribuído - IFBA Sistemas Distribuídos")
@@ -366,6 +385,7 @@ def menu():
     print("2 - Iniciar como Trabalhador")
     print("0 - Sair")
     return input("Escolha: ").strip()
+
 
 def main():
     escolha = menu()
@@ -397,5 +417,7 @@ def main():
         print("Opção inválida.")
         main()
 
+
 if __name__ == "__main__":
     main()
+    
