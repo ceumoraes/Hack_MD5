@@ -222,6 +222,13 @@ class ServidorDistribuido:
         self.alvo_md5 = alvo_md5
         self.lamport = LamportClock()
         self.is_coordenador = (self.meu_ip == self.coordenador_ip)
+
+        # Inicio da adaptação
+        self.coordenador_original = coordenador_ip
+        self.eleicao_em_andamento = False
+        self.ultimo_heartbeat = time.time()
+        # Final da adaptação
+
         self.gerente = GerenteDistribuido(meu_ip, self.is_coordenador)
         self.senha_encontrada = None
         self.sair = False
@@ -229,6 +236,14 @@ class ServidorDistribuido:
         threading.Thread(target=self._servidor_tcp, daemon=True).start()
 
         if not self.is_coordenador:
+            # Início
+            threading.Thread(target=self._monitorar_coordenador, daemon=True).start()
+            threading.Thread(target=self._verificar_eleicao, daemon=True).start()
+
+            print(f"Inicializando ServidorDistribuido ({'COORDENADOR' if self.is_coordenador else 'TRABALHADOR'})")
+            print(f"meu_ip={self.meu_ip}, coordenador_ip={self.coordenador_ip}, alvo_md5={self.alvo_md5}")
+            # Fim
+
             self.conectar_ao_sistema()
             wait_count = 0
             while self.alvo_md5 is None:
@@ -251,6 +266,127 @@ class ServidorDistribuido:
 
         print(f"Inicializando ServidorDistribuido ({'COORDENADOR' if self.is_coordenador else 'TRABALHADOR'})")
         print(f"meu_ip={self.meu_ip}, coordenador_ip={self.coordenador_ip}, alvo_md5={self.alvo_md5}")
+
+    # Modificações - inicio
+    def _monitorar_coordenador(self):
+        """Monitora a saúde do coordenador atual"""
+        while not self.sair and not self.is_coordenador:
+            try:
+                # Verifica se coordenador está respondendo
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(3)
+                s.connect((self.coordenador_ip, PORTA_TCP))
+                s.sendall(json.dumps({"cmd": "HEARTBEAT"}).encode())
+                s.recv(64)
+                s.close()
+                self.ultimo_heartbeat = time.time()
+            except:
+                # Coordenador não respondeu
+                if time.time() - self.ultimo_heartbeat > 10:  # 10 segundos sem resposta
+                    print("⚠️  Coordenador não responde! Iniciando eleição...")
+                    self._iniciar_eleicao_aleatoria()
+                    break
+            
+            time.sleep(5)  # Verifica a cada 5 segundos
+
+    def _iniciar_eleicao_aleatoria(self):
+        """Inicia processo de eleição aleatória"""
+        if self.eleicao_em_andamento:
+            return
+            
+        self.eleicao_em_andamento = True
+        print("Iniciando eleição aleatória...")
+        
+        # Obtém lista de máquinas conhecidas
+        maquinas_conhecidas = self.gerente.get_lista_maquinas()
+        
+        if not maquinas_conhecidas:
+            print("Nenhuma máquina conhecida para eleição")
+            self.eleicao_em_andamento = False
+            return
+        
+        # Remove coordenador morto da lista
+        maquinas_ativas = [ip for ip in maquinas_conhecidas if ip != self.coordenador_ip]
+        
+        if not maquinas_ativas:
+            print("Sou a única máquina restante. Me tornando coordenador!")
+            self._tornar_se_coordenador()
+            return
+        
+        # Seleção aleatória - cada máquina tem chance igual
+        random.seed(time.time())  # Garante aleatoriedade
+        novo_coordenador = random.choice(maquinas_ativas)
+        
+        if novo_coordenador == self.meu_ip:
+            print("Fui eleito aleatoriamente como novo coordenador!")
+            self._tornar_se_coordenador()
+        else:
+            print(f"🎲 {novo_coordenador} foi eleito aleatoriamente")
+            print("🔄 Atualizando para novo coordenador...")
+            self.coordenador_ip = novo_coordenador
+            self.is_coordenador = False
+            self.eleicao_em_andamento = False
+            
+            # Reconecta ao novo coordenador
+            self._reconectar_ao_novo_coordenador()
+
+    def _tornar_se_coordenador(self):
+        """Transforma esta máquina em coordenador"""
+        self.is_coordenador = True
+        self.coordenador_ip = self.meu_ip
+        self.eleicao_em_andamento = False
+        self.gerente.is_coordenador = True
+        
+        print(f"Agora sou o coordenador!")
+        print("Anunciando para todas as máquinas...")
+        
+        # Anuncia para todas as máquinas conhecidas
+        for ip in self.gerente.get_lista_maquinas():
+            if ip != self.meu_ip:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(3)
+                    s.connect((ip, PORTA_TCP))
+                    s.sendall(json.dumps({
+                        "cmd": "NOVO_COORDENADOR", 
+                        "ip": self.meu_ip,
+                        "hash_alvo": self.alvo_md5
+                    }).encode())
+                    s.close()
+                except:
+                    continue
+
+    def _reconectar_ao_novo_coordenador(self):
+        """Reconecta ao novo coordenador eleito"""
+        print(f"Reconectando ao novo coordenador: {self.coordenador_ip}")
+        
+        # Para e reinicia o brute force
+        if hasattr(self, 'brute_force'):
+            self.brute_force.sair = True
+            self.brute_force.join()
+        
+        # Reconecta ao sistema
+        self.conectar_ao_sistema()
+        
+        # Reinicia o brute force
+        conjuntos = ["digitos", "minusculas", "maiusculas", "letras", "minusculasdigitos", "imprimiveis"]
+        self.brute_force = BruteForceMD5(
+            meu_ip=self.meu_ip,
+            gerente=self.gerente,
+            lamport=self.lamport,
+            alvo_hash=self.alvo_md5,
+            conjuntos=conjuntos,
+            coordenador_ip=self.coordenador_ip
+        )
+        self.brute_force.start()
+        
+        self.eleicao_em_andamento = False
+
+    def _verificar_eleicao(self):
+        """Verifica se há mensagens de eleição"""
+        while not self.sair and not self.is_coordenador:
+            time.sleep(1)
+    # Modificações - fim
 
     def conectar_ao_sistema(self):
         print("Solicitando entrada no sistema...")
@@ -296,6 +432,7 @@ class ServidorDistribuido:
             data = conn.recv(4096)
             info = json.loads(data.decode())
             cmd = info.get("cmd")
+
             if cmd == "NOVO_MEMBRO":
                 ip_novo = info.get("ip")
                 self.gerente.adicionar_maquina(ip_novo)
@@ -311,6 +448,28 @@ class ServidorDistribuido:
                             s.close()
                         except Exception:
                             pass
+
+            # Inicio
+            elif cmd == "HEARTBEAT":
+                # Responde ao heartbeat
+                conn.sendall(json.dumps({"cmd": "HEARTBEAT_RESPOSTA"}).encode())
+                
+            elif cmd == "NOVO_COORDENADOR":
+                # Recebeu anúncio de novo coordenador
+                novo_coord = info.get("ip")
+                hash_alvo = info.get("hash_alvo", self.alvo_md5)
+
+                if novo_coord != self.coordenador_ip:
+                    print(f"📢 Novo coordenador eleito: {novo_coord}")
+                    self.coordenador_ip = novo_coord
+                    self.is_coordenador = (self.meu_ip == novo_coord)
+                    self.alvo_md5 = hash_alvo
+                    
+                    if not self.is_coordenador:
+                        # Se não for o novo coordenador, reconecta
+                        threading.Thread(target=self._reconectar_ao_novo_coordenador, daemon=True).start()
+            # Fim
+
             elif cmd == "NOVO_MEMBRO_PROPAGADO":
                 ip_novo = info.get("ip")
                 self.gerente.adicionar_maquina(ip_novo)
