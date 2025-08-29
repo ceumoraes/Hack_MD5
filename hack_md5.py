@@ -1,16 +1,14 @@
-#!/usr/bin/env python3
-"""
-Força bruta distribuída de MD5 por comprimento
-
-Modo coordenador ou trabalhador, escolha via menu interativo.
-Agora o trabalhador testa cada conjunto (digitos, minusculas, maiusculas, letras, minusculasdigitos, imprimiveis) em ordem para cada comprimento recebido.
-"""
-
+import threading
+import socket
+import time
 import hashlib
 import itertools
-import socket
-import threading
-import time
+import json
+import random
+
+PORTA_TCP = 12001
+PORTA_UDP_BERKLEY = 12002
+TIMEOUT = 30
 
 CONJUNTOS = {
     "digitos": "0123456789",
@@ -21,293 +19,383 @@ CONJUNTOS = {
     "imprimiveis": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
 }
 
-def menu():
-    print("="*50)
-    print(" Força Bruta Distribuída de MD5")
-    print("="*50)
-    print("Selecione o modo de operação:")
-    print("[1] Coordenador")
-    print("[2] Trabalhador")
-    print("[0] Sair")
-    escolha = input("Digite o número da opção: ").strip()
-    return escolha
+class LamportClock:
+    def __init__(self):
+        self.timestamp = random.randint(0, 100)
+    def tick(self):
+        self.timestamp += 1
+        return self.timestamp
+    def update(self, received):
+        self.timestamp = max(self.timestamp, received) + 1
+        return self.timestamp
+    def get(self):
+        return self.timestamp
 
-def menu_coordenador():
-    host = input("Host para escutar [0.0.0.0]: ").strip() or "0.0.0.0"
-    porta = input("Porta para escutar [12001]: ").strip() or "12001"
-    alvo = input("Hash MD5 alvo: ").strip()
-    conjunto = "minusculasdigitos"  # só para mostrar no menu, mas será ignorado pelo trabalhador
-    return host, int(porta), alvo, conjunto
-
-def menu_trabalhador():
-    servidor = input("IP/host do coordenador: ").strip()
-    porta = input("Porta do coordenador [12001]: ").strip() or "12001"
-    max_comprimento = input("Comprimento máximo [12]: ").strip() or "12"
-    return servidor, int(porta), int(max_comprimento)
-
-class Coordenador:
-    def __init__(self, host, porta, alvo, conjunto):
-        self.host = host
-        self.porta = porta
-        self.alvo = alvo
-        self.conjunto = conjunto
-        self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.servidor.bind((host, porta))
-        self.servidor.listen(100)
-        self.proximo_comprimento = 1
-        self.designados = {}
-        self.clientes = set()
-        self.encontrado = False
-        self.senha_encontrada = None
+class GerenteDistribuido:
+    def __init__(self, meu_ip, is_coordenador):
+        self.meu_ip = meu_ip
+        self.is_coordenador = is_coordenador
+        self.lista_maquinas = [meu_ip]
+        self.tarefas = {}
         self.lock = threading.Lock()
-
-    def iniciar(self):
-        print(f"[COORD] Escutando em {self.host}:{self.porta}")
-        print(f"[COORD] Alvo MD5: {self.alvo}")
-        threading.Thread(target=self._aceitar_conexoes, daemon=True).start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n[COORD] Encerrando...")
-            self._broadcast("PARAR\n")
-            self._fechar_tudo()
-
-    def _aceitar_conexoes(self):
-        while True:
-            conexao, endereco = self.servidor.accept()
-            print(f"[COORD] Trabalhador conectado de {endereco[0]}:{endereco[1]}")
-            with self.lock:
-                self.clientes.add(conexao)
-            self._enviar(conexao, f"CONFIG {self.alvo}\n")
-            threading.Thread(target=self._tratar_cliente, args=(conexao,), daemon=True).start()
-
-    def _tratar_cliente(self, conexao):
-        try:
-            conexao.settimeout(60)
-            buf = b""
-            while True:
-                if self.encontrado:
-                    if self.senha_encontrada:
-                        self._enviar(conexao, f"PARAR ENCONTRADO {self.senha_encontrada}\n")
-                    else:
-                        self._enviar(conexao, "PARAR\n")
-                    break
-                dados = conexao.recv(4096)
-                if not dados:
-                    break
-                buf += dados
-                while b"\n" in buf:
-                    linha, buf = buf.split(b"\n", 1)
-                    self._tratar_linha(conexao, linha.decode(errors="ignore").strip())
-        except Exception:
-            pass
-        finally:
-            with self.lock:
-                self.designados.pop(conexao, None)
-                self.clientes.discard(conexao)
-            try:
-                conexao.close()
-            except Exception:
-                pass
-
-    def _tratar_linha(self, conexao, linha):
-        if not linha:
-            return
-        partes = linha.split()
-        comando = partes[0].upper()
-        if comando == "PEDIR":
-            self._tratar_pedir(conexao)
-        elif comando == "FINALIZADO" and len(partes) >= 2 and partes[1].isdigit():
-            print(f"[COORD] FINALIZADO comprimento={partes[1]}")
-            with self.lock:
-                self.designados.pop(conexao, None)
-        elif comando == "ENCONTRADO" and len(partes) >= 2:
-            senha = linha[len("ENCONTRADO "):]
-            print(f"[COORD] SENHA ENCONTRADA: '{senha}'")
-            with self.lock:
-                self.encontrado = True
-                self.senha_encontrada = senha
-            self._broadcast(f"PARAR ENCONTRADO {senha}\n")
-        else:
-            print(f"[COORD] Comando desconhecido: {linha}")
-
-    def _tratar_pedir(self, conexao):
-        with self.lock:
-            if self.encontrado:
-                msg = f"PARAR ENCONTRADO {self.senha_encontrada}\n" if self.senha_encontrada else "PARAR\n"
-                self._enviar(conexao, msg)
-                return
-            comprimento = self.proximo_comprimento
-            self.proximo_comprimento += 1
-            self.designados[conexao] = comprimento
-        print(f"[COORD] Designando comprimento={comprimento}")
-        self._enviar(conexao, f"TAREFA {comprimento}\n")
-
-    def _broadcast(self, msg):
-        with self.lock:
-            clientes = list(self.clientes)
-        for c in clientes:
-            try:
-                c.sendall(msg.encode())
-            except Exception:
-                pass
-
-    def _enviar(self, conexao, msg):
-        try:
-            conexao.sendall(msg.encode())
-        except Exception:
-            pass
-
-    def _fechar_tudo(self):
-        with self.lock:
-            clientes = list(self.clientes)
-        for c in clientes:
-            try:
-                c.close()
-            except Exception:
-                pass
-        try:
-            self.servidor.close()
-        except Exception:
-            pass
-
-class Trabalhador:
-    def __init__(self, servidor, porta, max_comprimento):
-        self.servidor = servidor
-        self.porta = porta
-        self.max_comprimento = max_comprimento
-        self.sock = None
-        self.sair = False
+        self.proximo_comprimento = 1
+        self.proximo_conjunto = 0
         self.senha_encontrada = None
-        self.alvo = None
 
-    def iniciar(self):
-        while not self.sair:
-            try:
-                self._conectar()
-                self._configurar()
-                self._executar()
-            except KeyboardInterrupt:
-                print("\n[TRAB] Interrompido")
-                self.sair = True
-            except Exception as e:
-                print(f"[TRAB] Erro de conexão: {e}. Tentando novamente em 2s...")
-                time.sleep(2)
-        print("[TRAB] Finalizado")
+    def adicionar_maquina(self, ip):
+        with self.lock:
+            if ip not in self.lista_maquinas:
+                self.lista_maquinas.append(ip)
+                print(f"[MAQUINAS] Adicionada máquina {ip}")
 
-    def _conectar(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(30)
-        self.sock.connect((self.servidor, self.porta))
-        print(f"[TRAB] Conectado a {self.servidor}:{self.porta}")
+    def remover_maquina(self, ip):
+        with self.lock:
+            if ip in self.lista_maquinas:
+                self.lista_maquinas.remove(ip)
+                print(f"[MAQUINAS] Removida máquina {ip}")
+            if ip in self.tarefas:
+                del self.tarefas[ip]
 
-    def _enviar(self, msg):
-        if self.sock:
-            self.sock.sendall((msg + "\n").encode())
+    def replicar_lista(self, destino_ip):
+        try:
+            msg = json.dumps({"cmd": "LISTA_MAQUINAS", "lista": self.lista_maquinas}).encode()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect((destino_ip, PORTA_TCP))
+            s.sendall(msg)
+            s.close()
+        except Exception:
+            pass
 
-    def _receber_linha(self):
-        if not self.sock:
-            return None
-        buf = b""
-        while True:
-            dados = self.sock.recv(4096)
-            if not dados:
-                return None
-            buf += dados
-            if b"\n" in buf:
-                linha, _ = buf.split(b"\n", 1)
-                return linha.decode(errors="ignore").strip()
+    def atualizar_lista(self, nova_lista):
+        with self.lock:
+            self.lista_maquinas = list(nova_lista)
+            print(f"[MAQUINAS] Lista atualizada: {self.lista_maquinas}")
 
-    def _configurar(self):
-        while True:
-            linha = self._receber_linha()
-            if linha is None:
-                raise ConnectionError("Desconectado antes da configuração")
-            partes = linha.split()
-            if partes[0].upper() == "CONFIG" and len(partes) >= 2:
-                self.alvo = partes[1].lower()
-                print(f"[TRAB] Alvo recebido: {self.alvo}")
-                break
-
-    def _executar(self):
-        conjuntos_em_ordem = ["digitos", "minusculas", "maiusculas", "letras", "minusculasdigitos", "imprimiveis"]
-        while not self.sair:
-            self._enviar("PEDIR")
-            linha = self._receber_linha()
-            if linha is None:
-                print("[TRAB] Desconectado pelo coordenador")
-                return
-            partes = linha.split()
-            comando = partes[0].upper()
-            if comando == "TAREFA" and len(partes) >= 2:
-                try:
-                    comprimento = int(partes[1])
-                except ValueError:
-                    print(f"[TRAB] TAREFA inválida: {linha}")
-                    continue
-                print(f"[TRAB] Tarefa recebida comprimento={comprimento}")
-                if comprimento > self.max_comprimento:
-                    print(f"[TRAB] Comprimento {comprimento} acima do máximo. Parando.")
-                    self.sair = True
-                    return
-                # Testa todos os conjuntos em ordem
-                for nome_conjunto in conjuntos_em_ordem:
-                    if self.sair:
-                        break
-                    conjunto = CONJUNTOS[nome_conjunto]
-                    print(f"[TRAB] Testando conjunto: {nome_conjunto}")
-                    achou = self._forca_bruta(comprimento, conjunto)
-                    if achou:
-                        break
-                if self.sair:
-                    return
-                self._enviar(f"FINALIZADO {comprimento}")
-            elif comando == "PARAR":
-                if len(partes) >= 3 and partes[1].upper() == "ENCONTRADO":
-                    self.senha_encontrada = " ".join(partes[2:])
-                    print(f"[TRAB] PARAR - Senha encontrada: {self.senha_encontrada}")
-                else:
-                    print("[TRAB] PARAR recebido")
-                self.sair = True
-                return
-            elif comando == "AGUARDE":
-                time.sleep(0.5)
+    def atribuir_tarefa(self, ip, conjuntos):
+        with self.lock:
+            if self.senha_encontrada is not None:
+                return None, None
+            tarefa = self.tarefas.get(ip)
+            if tarefa is None or tarefa.get("status") == "finalizado":
+                comprimento = self.proximo_comprimento
+                conjunto_idx = self.proximo_conjunto
+                conjunto_nome = conjuntos[conjunto_idx]
+                self.tarefas[ip] = {
+                    "comprimento": comprimento,
+                    "conjunto": conjunto_nome,
+                    "status": "em_andamento"
+                }
+                print(f"[DEBUG][COORD] Atribuindo tarefa para IP {ip}: comprimento={comprimento}, conjunto={conjunto_nome}")
+                self.proximo_conjunto += 1
+                if self.proximo_conjunto >= len(conjuntos):
+                    self.proximo_conjunto = 0
+                    self.proximo_comprimento += 1
+                return comprimento, conjunto_nome
             else:
-                print(f"[TRAB] Comando desconhecido do coordenador: {linha}")
-                time.sleep(0.5)
+                return tarefa["comprimento"], tarefa["conjunto"]
+
+    def finalizar_tarefa(self, ip):
+        with self.lock:
+            if ip in self.tarefas:
+                self.tarefas[ip]["status"] = "finalizado"
+
+    def get_lista_maquinas(self):
+        with self.lock:
+            return list(self.lista_maquinas)
+
+    def get_tarefas(self):
+        with self.lock:
+            return dict(self.tarefas)
+
+class BruteForceMD5(threading.Thread):
+    def __init__(self, meu_ip, gerente, lamport, alvo_hash, conjuntos, coordenador_ip):
+        super().__init__(daemon=True)
+        self.meu_ip = meu_ip
+        self.gerente = gerente
+        self.lamport = lamport
+        self.alvo_hash = alvo_hash
+        self.conjuntos = conjuntos
+        self.coordenador_ip = coordenador_ip
+        self.sair = False
+
+    def pedir_tarefa_ao_coordenador(self):
+        try:
+            msg = json.dumps({"cmd": "PEDIR_TAREFA", "ip": self.meu_ip}).encode()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect((self.coordenador_ip, PORTA_TCP))
+            s.sendall(msg)
+            resposta = s.recv(4096)
+            info = json.loads(resposta.decode())
+            s.close()
+            if info.get("cmd") == "TAREFA_ASSIGNADA":
+                comprimento = info["comprimento"]
+                conjunto_nome = info["conjunto"]
+                print(f"[DEBUG] Tarefa recebida: comprimento={comprimento}, conjunto={conjunto_nome}")
+                return comprimento, conjunto_nome
+            return None, None
+        except Exception as e:
+            print(f"[TRAB] Erro ao pedir tarefa ao coordenador: {e}")
+        return None, None
+
+    def notificar_finalizacao(self):
+        try:
+            msg = json.dumps({"cmd": "TAREFA_FINALIZADA", "ip": self.meu_ip}).encode()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect((self.coordenador_ip, PORTA_TCP))
+            s.sendall(msg)
+            s.close()
+        except Exception:
+            pass
+
+    def run(self):
+        while self.alvo_hash is None:
+            time.sleep(0.5)
+        print(f"[DEBUG] Hash alvo recebido: {self.alvo_hash}")
+        print(f"[DEBUG][TRAB] Lista de máquinas: {self.gerente.get_lista_maquinas()}")
+        while not self.sair:
+            if self.gerente.senha_encontrada is not None:
+                break
+            comprimento, conjunto_nome = self.pedir_tarefa_ao_coordenador()
+            if self.sair or comprimento is None:
+                print("[TRAB] Parando execução pois senha foi encontrada ou não há mais tarefas.")
+                break
+            print(f"[BF] Testando senhas de comprimento={comprimento}, conjunto={conjunto_nome}")
+            conjunto = CONJUNTOS[conjunto_nome]
+            achou = self._forca_bruta(comprimento, conjunto)
+            if achou:
+                self._on_password_found(achou)
+                break
+            self.notificar_finalizacao()
 
     def _forca_bruta(self, comprimento, conjunto):
-        alvo = self.alvo
+        alvo = self.alvo_hash.lower()
+        print(f"[DEBUG] [BF] Comprimento: {comprimento}, conjunto: {conjunto}")
         for tup in itertools.product(conjunto, repeat=comprimento):
-            if self.sair:
-                return False
             s = ''.join(tup)
             h = hashlib.md5(s.encode()).hexdigest()
+            print(f"[DEBUG] Testando: {s} -> {h}")
             if h == alvo:
-                print(f"[TRAB] ENCONTRADO '{s}' para comprimento={comprimento} e conjunto atual")
-                self._enviar(f"ENCONTRADO {s}")
+                print(f"\n[BF] SENHA ENCONTRADA: '{s}' para comprimento={comprimento} e conjunto {conjunto}")
+                return s
+        print("\033[2K\r", end="")
+        return None
+
+    def _on_password_found(self, senha):
+        print(f"[TRAB] Senha encontrada: {senha}")
+        for ip in self.gerente.get_lista_maquinas():
+            if ip != self.meu_ip:
+                try:
+                    msg = json.dumps({"cmd": "SENHA_ENCONTRADA", "senha": senha}).encode()
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(TIMEOUT)
+                    s.connect((ip, PORTA_TCP))
+                    s.sendall(msg)
+                    s.close()
+                except Exception as e:
+                    print(f"[TRAB] Falha ao enviar SENHA_ENCONTRADA para {ip}: {e}")
+        self.gerente.senha_encontrada = senha
+        self.sair = True
+
+class ServidorDistribuido:
+    def __init__(self, meu_ip, coordenador_ip, alvo_md5):
+        self.meu_ip = meu_ip
+        self.coordenador_ip = coordenador_ip
+        self.alvo_md5 = alvo_md5
+        self.lamport = LamportClock()
+        self.is_coordenador = (self.meu_ip == self.coordenador_ip)
+        self.gerente = GerenteDistribuido(meu_ip, self.is_coordenador)
+        self.senha_encontrada = None
+        self.sair = False
+
+        threading.Thread(target=self._servidor_tcp, daemon=True).start()
+
+        if not self.is_coordenador:
+            self.conectar_ao_sistema()
+            wait_count = 0
+            while self.alvo_md5 is None:
+                time.sleep(0.5)
+                wait_count += 1
+                if wait_count % 10 == 0:
+                    print("Trabalhador aguardando recebimento do hash...")
+            conjuntos = ["digitos", "minusculas", "maiusculas", "letras", "minusculasdigitos", "imprimiveis"]
+            print(f"Trabalhador vai iniciar brute force com hash: {self.alvo_md5}")
+            self.brute_force = BruteForceMD5(
+                meu_ip=self.meu_ip,
+                gerente=self.gerente,
+                lamport=self.lamport,
+                alvo_hash=self.alvo_md5,
+                conjuntos=conjuntos,
+                coordenador_ip=self.coordenador_ip
+            )
+            self.brute_force.start()
+
+        print(f"Inicializando ServidorDistribuido ({'COORDENADOR' if self.is_coordenador else 'TRABALHADOR'})")
+        print(f"meu_ip={self.meu_ip}, coordenador_ip={self.coordenador_ip}, alvo_md5={self.alvo_md5}")
+
+    def conectar_ao_sistema(self):
+        print("Solicitando entrada no sistema...")
+        try:
+            msg = json.dumps({"cmd": "NOVO_MEMBRO", "ip": self.meu_ip}).encode()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect((self.coordenador_ip, PORTA_TCP))
+            s.sendall(msg)
+            s.close()
+        except Exception as e:
+            print(f"Falha ao conectar ao coordenador: {e}")
+        try:
+            msg = json.dumps({"cmd": "PEDIR_HASH", "ip": self.meu_ip}).encode()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect((self.coordenador_ip, PORTA_TCP))
+            s.sendall(msg)
+            resposta = s.recv(4096)
+            info = json.loads(resposta.decode())
+            if info.get("cmd") == "CONFIG_HASH":
+                self.alvo_md5 = info.get("hash")
+                print(f"Hash alvo recebido do coordenador: {self.alvo_md5}")
+            s.close()
+        except Exception as e:
+            print(f"Falha ao pedir hash ao coordenador: {e}")
+
+    def _servidor_tcp(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', PORTA_TCP))
+        sock.listen(30)
+        print(f"[TCP] Servidor escutando em {self.meu_ip}:{PORTA_TCP}")
+        while not self.sair:
+            try:
+                conn, addr = sock.accept()
+                threading.Thread(target=self._handle_conn, args=(conn, addr), daemon=True).start()
+            except Exception:
+                continue
+
+    def _handle_conn(self, conn, addr):
+        try:
+            data = conn.recv(4096)
+            info = json.loads(data.decode())
+            cmd = info.get("cmd")
+            if cmd == "NOVO_MEMBRO":
+                ip_novo = info.get("ip")
+                self.gerente.adicionar_maquina(ip_novo)
+                self.gerente.replicar_lista(ip_novo)
+                for ip in self.gerente.get_lista_maquinas():
+                    if ip != self.meu_ip and ip != ip_novo:
+                        try:
+                            msg = json.dumps({"cmd": "NOVO_MEMBRO_PROPAGADO", "ip": ip_novo}).encode()
+                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            s.settimeout(TIMEOUT)
+                            s.connect((ip, PORTA_TCP))
+                            s.sendall(msg)
+                            s.close()
+                        except Exception:
+                            pass
+            elif cmd == "NOVO_MEMBRO_PROPAGADO":
+                ip_novo = info.get("ip")
+                self.gerente.adicionar_maquina(ip_novo)
+            elif cmd == "LISTA_MAQUINAS":
+                lista = info.get("lista", [])
+                self.gerente.atualizar_lista(lista)
+            elif cmd == "SENHA_ENCONTRADA":
+                senha = info.get("senha")
+                print(f"\n[SOLUÇÃO] Senha recebida pelo coordenador: {senha}")
+                print(f"Senha encontrada: {senha}")
+                print("[TRAB] Senha encontrada, encerrando brute force.")
+                self.senha_encontrada = senha
                 self.sair = True
-                self.senha_encontrada = s
-                return True
-        return False
+                self.gerente.senha_encontrada = senha
+            elif cmd == "PEDIR_HASH":
+                if self.is_coordenador:
+                    try:
+                        msg = json.dumps({"cmd": "CONFIG_HASH", "hash": self.alvo_md5}).encode()
+                        conn.sendall(msg)
+                    except Exception:
+                        pass
+            elif cmd == "CONFIG_HASH":
+                self.alvo_md5 = info.get("hash")
+                print(f"Hash alvo recebido do coordenador: {self.alvo_md5}")
+            elif cmd == "PEDIR_TAREFA":
+                if self.is_coordenador:
+                    ip_trab = info.get("ip")
+                    conjuntos = ["digitos", "minusculas", "maiusculas", "letras", "minusculasdigitos", "imprimiveis"]
+                    comprimento, conjunto_nome = self.gerente.atribuir_tarefa(ip_trab, conjuntos)
+                    if comprimento is None:
+                        msg = json.dumps({
+                            "cmd": "TAREFA_ASSIGNADA",
+                            "comprimento": None,
+                            "conjunto": None
+                        }).encode()
+                    else:
+                        msg = json.dumps({
+                            "cmd": "TAREFA_ASSIGNADA",
+                            "comprimento": comprimento,
+                            "conjunto": conjunto_nome
+                        }).encode()
+                    conn.sendall(msg)
+            elif cmd == "TAREFA_FINALIZADA":
+                if self.is_coordenador:
+                    ip_trab = info.get("ip")
+                    self.gerente.finalizar_tarefa(ip_trab)
+        except Exception as e:
+            print(f"Erro ao tratar conexão: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+def get_meu_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+def menu():
+    print("="*60)
+    print(" Brute Force MD5 Distribuído - IFBA Sistemas Distribuídos")
+    print("="*60)
+    print("1 - Iniciar como Coordenador")
+    print("2 - Iniciar como Trabalhador")
+    print("0 - Sair")
+    return input("Escolha: ").strip()
 
 def main():
-    while True:
-        escolha = menu()
-        if escolha == "1":
-            host, porta, alvo, conjunto = menu_coordenador()
-            Coordenador(host, porta, alvo, conjunto).iniciar()
-            break
-        elif escolha == "2":
-            servidor, porta, max_comprimento = menu_trabalhador()
-            Trabalhador(servidor, porta, max_comprimento).iniciar()
-            break
-        elif escolha == "0":
-            print("Saindo...")
-            break
-        else:
-            print("Opção inválida. Tente novamente.")
+    escolha = menu()
+    if escolha == "1":
+        meu_ip = get_meu_ip()
+        print(f"Seu IP detectado: {meu_ip}")
+        hash_md5 = input("Digite o hash MD5 alvo: ").strip()
+        print("Iniciando como coordenador...")
+        servidor = ServidorDistribuido(meu_ip, meu_ip, hash_md5)
+        while True:
+            if servidor.senha_encontrada is not None:
+                print(f"\n[SOLUÇÃO FINAL] Senha encontrada: {servidor.senha_encontrada}")
+                break
+            time.sleep(1)
+    elif escolha == "2":
+        meu_ip = get_meu_ip()
+        print(f"Seu IP detectado: {meu_ip}")
+        coord_ip = input("Digite IP do coordenador: ").strip()
+        print("Conectando ao coordenador para receber o hash alvo...")
+        servidor = ServidorDistribuido(meu_ip, coord_ip, None)
+        while servidor.gerente.senha_encontrada is None:
+            time.sleep(1)
+        print(f"[TRAB] Senha encontrada: {servidor.gerente.senha_encontrada}")
+        exit(0)
+    elif escolha == "0":
+        print("Saindo...")
+        exit(0)
+    else:
+        print("Opção inválida.")
+        main()
 
 if __name__ == "__main__":
     main()

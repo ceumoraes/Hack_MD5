@@ -1,0 +1,56 @@
+PROJETO FINAL
+
+1. BASE DO PROJETO
+
+O projeto final consiste de algumas implementações necessárias, entre elas temos o
+algoritmo de gerência de região distribuída, relógios lógicos de lamport e berkley entre outros
+detalhados abaixo. 
+
+Tema – Hack-MD5
+criar um software distribuido para descobrir uma senha baseado em uma cifra MD5, isto é, 
+o software recebe uma palavra MD5 como, por exemplo,
+“202cb962ac59075b964b07152d234b70” e o software deve descobrir qual palavra gerou este hash.
+Para isso, como não existe nenhum algoritmo capaz de reverter o processo de hash, a única solução
+é através de tentativa e erro, método chamado de força bruta.
+Uma solução é que o primeiro computador a iniciar o procedimento teste todas as
+combinações de um caracter e ao terminar seu processamento teste com dois caracteres e assim por
+diante, mas quando um outro computador se conectar ao sistema, delegamos a este os testes com
+strings que tenham um caracter a mais do que está sendo atualmente processado, assim, deve existir
+uma variável para saber qual máquina está processando strings com qual quantidade de caracteres e
+ao terminar seu cálculo, ela deve pedir para processar a próxima quantidade de caracteres
+disponível, marcando aquela quantidade como já processada.
+
+1.1. Ricart-Agrawala
+Para implementação de sistemas distribuidos, qualquer que seja a aplicação precisa ter
+controle sobre seu banco de dados distribuido e, para isso, é necessário a implementação do
+algoritmo de Ricart-Agrawala, responsável por gerência da região crítica de forma distribuida
+usando TCP, já que é necessário garantia de recebimento de mensagens. Uma vez terminado esse
+passo, deve ser criado uma lista de máquinas que fazem parte do sistema e essa lista deve ser
+gerenciada pelo algoritmo de controle de região crítica.
+Além disso, toda máquina, ao iniciar, insere seu próprio IP nessa lista de máquinas uma vez
+que não tem a quem pedir permissão já que a lista está vazia, mas pode pedir para se conectar a uma
+outra máquina, nesse caso, ela limpa sua lista e fica esperando uma nova lista de máquinas ser
+replicada.
+
+1.2. Conexão com outra máquina
+A máquina que recebe o pedido de conexão deve solicitar a região crítica e, quando estiver
+de posse, insere o IP da máquina nova na lista, replica a lista completa para a nova máquina e deve
+ainda repassar o endereço da máquina nova para as máquinas que estavam anteriormente presentes
+na lista.
+Uma observação é que as operações de replicação assim como todas as mensagens trocadas
+pelo sistema não fazem sentido quando mandadas de uma máquina para ela mesma, então é
+necessário comparar sempre que for enviar uma mensagem para ignorar se for para si mesma.
+
+1.3 Lamport
+Deve ainda ser implementado o algoritmo de Lamport para que os tempos de relógio sejam
+confiáveis no algoritmo de Ricart-Agrawala o que pode ser feito enviando o relógio lógico junto a
+todas as mensagens trocadas pelos algoritmos acima que devem todos ser implementados em TCP.
+
+1.4 Berkley
+Para sincronização de relógios deve ser usado o algoritmo de Berkley que é o único que
+deve ser implementado em UDP já que para sincronização de relógios é mais interessante algo
+rápido evitando o custo de tempo gasto pelo Handshake do protocolo TCP. Para implementação
+desse algoritmo deve existir um socket UDP funcionando em uma porta diferente da porta TCP.
+O algoritmo de Berkley precisa que uma das máquinas do sistema distribuído seja eleita o
+coordenador, para isso, será o coordenador a máquina que for o primeiro item da lista de máquinas
+criada no item 1.1.
