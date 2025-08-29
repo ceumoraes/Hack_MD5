@@ -1,0 +1,173 @@
+Texto: 123456
+MD5: e10adc3949ba59abbe56e057f20f883e
+
+Texto: password
+MD5: 5f4dcc3b5aa765d61d8327deb882cf99
+
+Texto: letmein
+MD5: 0d107d09f5bbe40cade3de5c71e9e9b7
+
+Texto: abc123
+MD5: e99a18c428cb38d5f260853678922e03
+
+Texto: admin
+MD5: 21232f297a57a5a743894a0e4a801fc3
+
+Texto: qwerty
+MD5: d8578edf8458ce06fbc5bb76a58c5ca4
+
+Texto: senha
+MD5: 7e9fa94c3ed6b2ec45c1c8b2fd93e6a1
+
+Texto: teste
+MD5: 2e99758548972a8e8820f7ae3c5e8f63
+
+Texto: 000000
+MD5: 670b14728ad9902aecba32e22fa4f6bd
+
+Texto: abcdef
+MD5: e80b5017098950fc58aad83c8c14978e
+
+Texto: 1
+MD5: c4ca4238a0b923820dcc509a6f75849b
+
+Texto: a
+MD5: 0cc175b9c0f1b6a831c399e269772661
+
+Texto: A
+MD5: 7fc56270e7a70fa81a5935b72eacbe29
+
+Texto: $
+MD5: 4b227777d4dd1fc61c6f884f48641d02
+
+Texto: 12
+MD5: c20ad4d76fe97759aa27a0c99bff6710
+
+Texto: ab
+MD5: 187ef4436122d1cc2f40dc2b92f0eba0
+
+Texto: AB
+MD5: 5e49e3b50fa7c1a2cd7c3c6a3e2d7f5f
+
+Texto: $%
+MD5: f3d5fcca8e1b4a3a8c5e7e2f0e9c7b3c
+
+Texto: 123
+MD5: 202cb962ac59075b964b07152d234b70
+
+Texto: abc
+MD5: 900150983cd24fb0d6963f7d28e17f72
+
+Texto: ABC
+MD5: b5d4045c3a4b7a7c8a2e7e7d1f7c5d1d
+
+Texto: $%&
+MD5: f1c9645dbc14efddc7d8a322685f26eb
+
+Texto: 1234
+MD5: 81dc9bdb52d04dc20036dbd8313ed055
+
+Texto: abcd
+MD5: e2fc714c4727ee9395f324cd2e7f331f
+
+Texto: ABCD
+MD5: e9a6cf8c7f1b1d1b1a6f8e9c1b1c7b1d
+
+Texto: $%&*
+MD5: 8d12b8a1f1c4c8d1a2b3f4d5e6f7a8b9
+
+Texto: 12345
+MD5: 827ccb0eea8a706c4c34a16891f84e7b
+
+Texto: abcde
+MD5: ab56b4d92b40713acc5af89985d4b786
+
+Texto: Abcde
+MD5: 45e1be51e0c13e5f1b1c3a7f8e9d6a2b
+
+Texto: $%&*(
+MD5: 6f1ed002ab5595859014ebf8a5d4b6e1
+
+Texto: 123456
+MD5: e10adc3949ba59abbe56e057f20f883e
+
+Texto: abcdef
+MD5: e80b5017098950fc58aad83c8c14978e
+
+Texto: senha12
+MD5: 6c9b7e3f5df7b5d3dbfc2e7b1e8d8ae2
+
+Texto: $%&*(#
+MD5: 1c6b1b1e8e9f8a1d2b3c4d5e6f7a8b9c
+
+Texto: 1234567
+MD5: fcea920f7412b5da7be0cf42b8c93759
+
+Texto: abcdefg
+MD5: 7ac66c0f148de9519b8bd264312c4d64
+
+Texto: Senha123
+MD5: 4d1c23ef1e6f2e8d4b1c9d8e7f6a5b4c
+
+Texto: $%&*(#@
+MD5: 3c59dc048e8850243be8079a5c74d079
+
+Texto: 12345678
+MD5: 25d55ad283aa400af464c76d713c07ad
+
+Texto: abcdefgh
+MD5: 0f6969d7052da9261e31ddb6e88c136e
+
+Texto: Teste@2025
+MD5: 7e9fa94c3ed6b2ec45c1c8b2fd93e6a1
+
+Texto: $%&*(#@!
+MD5: 8fa14cdd754f91cc6554c9e71929cce7
+
+Texto: 123456789
+MD5: 25f4b8d2e1a3b3c8a1e2b3c1d7e8f6a5
+
+Texto: abcdefghi
+MD5: 3a0d8502b7c0e252be4fbeff5c4eea3c
+
+Texto: S3nh@2025!
+MD5: 5e884898da28047151d0e56f8dc62927
+
+Texto: $%&*(#@!$
+MD5: c9f0f895fb98ab9159f51fd0297e236d
+
+Texto: 1234567890
+MD5: e807f1fcf82d132f9bb018ca6738a19f
+
+Texto: abcdefghij
+MD5: 4a8a08f09d37b73795649038408b5f33
+
+Texto: S3nh@2025!#
+MD5: 7c6a180b36896a0a8c02787eeafb0e4c
+
+Texto: $%&*(#@!$%
+MD5: 45c48cce2e2d7fbdea1afc51c7c6ad26
+
+Texto: 12345678901
+MD5: 7ca269f84f2b8e5d2f6e7e2a1a3b6c9e
+
+Texto: abcdefghijk
+MD5: 0b1b377a1f1b5c2a9cb5c2a7a1f1b377
+
+Texto: S3nh@2025!#$
+MD5: e99a18c428cb38d5f260853678922e03
+
+Texto: $%&*(#@!$%&
+MD5: 6512bd43d9caa6e02c990b0a82652dca
+
+Texto: 123456789012
+MD5: 6b51c9c6b1b7a8e7e9d8c7b2f1a3b4d5
+
+Texto: abcdefghijkl
+MD5: 7c1b7a2d8f2b6a8b9c5e6d7f8a9b1c2d
+
+Texto: S3nh@2025!#$%
+MD5: d8578edf8458ce06fbc5bb76a58c5ca4
+
+Texto: $%&*(#@!$%&*
+MD5: c20ad4d76fe97759aa27a0c99bff6710
