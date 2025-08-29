@@ -1,14 +1,16 @@
-import socket
 import threading
-import itertools
-import hashlib
-import json
+import socket
 import time
+import hashlib
+import itertools
+import json
 import random
 
-PORT = 12001
-PORT_UDP_BERKELEY = 12002
-BUFFER = 4096
+PORTA_TCP = 12001
+PORTA_UDP_BERKLEY = 12002
+TIMEOUT = 30
+CHECAGEM_COORDENADOR_INTERVALO = 5
+SINC_BERKLEY_INTERVALO = 10
 
 CONJUNTOS_MAP = {
     "digitos": "0123456789",
@@ -18,24 +20,8 @@ CONJUNTOS_MAP = {
 }
 CONJUNTOS = list(CONJUNTOS_MAP.keys())
 
-def gerar_tarefas():
-    for comprimento in range(1, 5):  # Teste até senhas de 4 caracteres
-        for conjunto_nome in CONJUNTOS:
-            yield (comprimento, conjunto_nome)
-
-def envia_json(conn, obj):
-    conn.sendall((json.dumps(obj) + '\n').encode())
-
-def recebe_json(conn):
-    linha = b''
-    while True:
-        ch = conn.recv(1)
-        if not ch or ch == b'\n':
-            break
-        linha += ch
-    if linha:
-        return json.loads(linha.decode())
-    return None
+def debug(clock, msg):
+    print(f"[DEBUG][{clock.get()}] {msg}")
 
 class RelogioBerkeley:
     def __init__(self):
@@ -53,30 +39,49 @@ class RelogioBerkeley:
         with self.lock:
             return float(f"{self.tempo:.2f}")
 
+def envia_json(conn, obj):
+    conn.sendall((json.dumps(obj) + '\n').encode())
+
+def recebe_json(conn):
+    linha = b''
+    while True:
+        ch = conn.recv(1)
+        if not ch or ch == b'\n':
+            break
+        linha += ch
+    if linha:
+        return json.loads(linha.decode())
+    return None
+
+def gerar_tarefas():
+    for comprimento in range(1, 5):  # até 4 caracteres
+        for conjunto_nome in CONJUNTOS:
+            yield (comprimento, conjunto_nome)
+
 class Coordenador:
-    def __init__(self, alvo_md5):
+    def __init__(self, meu_ip, alvo_md5, lista_maquinas):
+        self.meu_ip = meu_ip
         self.alvo_md5 = alvo_md5
+        self.lista_maquinas = lista_maquinas[:]  # ordem de entrada
         self.trabalhadores = {}  # ip: conn
         self.tarefas = list(gerar_tarefas())
-        self.tarefas_status = {}  # ip: tarefa atual
         self.senha_encontrada = None
-        self.lock = threading.Lock()
-        self.running = True
         self.clock = RelogioBerkeley()
-        threading.Thread(target=self.servidor, daemon=True).start()
+        self.running = True
+        self.lock = threading.Lock()
+        threading.Thread(target=self.servidor_tcp, daemon=True).start()
         threading.Thread(target=self.sincronismo_berkeley, daemon=True).start()
 
-    def servidor(self):
+    def servidor_tcp(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(('', PORT))
+        sock.bind(('', PORTA_TCP))
         sock.listen(20)
         print("[COORDENADOR] Servidor pronto.")
         while self.running:
             conn, addr = sock.accept()
-            threading.Thread(target=self.handle, args=(conn, addr[0]), daemon=True).start()
+            threading.Thread(target=self.handle_conn, args=(conn, addr[0]), daemon=True).start()
 
-    def handle(self, conn, ip):
-        print(f"[COORDENADOR] Conexão de {ip}")
+    def handle_conn(self, conn, ip):
         while self.running:
             try:
                 req = recebe_json(conn)
@@ -85,6 +90,10 @@ class Coordenador:
                 if cmd == "REGISTRAR":
                     with self.lock:
                         self.trabalhadores[ip] = conn
+                        if ip not in self.lista_maquinas:
+                            self.lista_maquinas.append(ip)
+                        # Propaga lista atualizada
+                        self.propaga_lista()
                     envia_json(conn, {"cmd": "OK"})
                 elif cmd == "PEDIR_TAREFA":
                     with self.lock:
@@ -95,7 +104,6 @@ class Coordenador:
                             envia_json(conn, {"cmd": "ENCERRAR", "senha": None})
                             break
                         tarefa = self.tarefas.pop(0)
-                        self.tarefas_status[ip] = tarefa
                     comprimento, conjunto_nome = tarefa
                     envia_json(conn, {"cmd": "TAREFA", "comprimento": comprimento, "conjunto": conjunto_nome, "hash": self.alvo_md5})
                 elif cmd == "SENHA_ENCONTRADA":
@@ -103,109 +111,148 @@ class Coordenador:
                     print(f"[COORDENADOR] Senha encontrada: {senha}")
                     with self.lock:
                         self.senha_encontrada = senha
+                        self.running = False
                     self.propagar_encerramento()
                     break
                 elif cmd == "FINALIZANDO":
+                    break
+                elif cmd == "GET_LISTA":
+                    envia_json(conn, {"cmd": "LISTA", "lista": self.lista_maquinas})
+                elif cmd == "NOVO_COORDENADOR":
+                    novo_ip = req.get("ip")
+                    with self.lock:
+                        self.running = False
                     break
             except Exception as e:
                 print(f"[COORDENADOR] Erro: {e}")
                 break
         with self.lock:
             self.trabalhadores.pop(ip, None)
-            self.tarefas_status.pop(ip, None)
         conn.close()
+
+    def propaga_lista(self):
+        msg = json.dumps({"cmd": "LISTA", "lista": self.lista_maquinas}).encode()
+        for ip, conn in self.trabalhadores.items():
+            try:
+                conn.sendall(msg + b'\n')
+            except: pass
 
     def propagar_encerramento(self):
         with self.lock:
             for conn in self.trabalhadores.values():
                 try:
                     envia_json(conn, {"cmd": "ENCERRAR", "senha": self.senha_encontrada})
-                except:
-                    pass
-            self.running = False
+                except: pass
         print("[COORDENADOR] Encerramento propagado.")
 
     def sincronismo_berkeley(self):
         while self.running:
-            time.sleep(10)
-            lista = list(self.trabalhadores.keys())
-            tempos = { "coordenador": self.clock.get() }
-            # coleta os tempos dos trabalhadores via UDP
+            time.sleep(SINC_BERKLEY_INTERVALO)
+            lista = self.lista_maquinas[:]
+            tempos = {self.meu_ip: self.clock.get()}
             for ip in lista:
+                if ip == self.meu_ip: continue
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                         s.settimeout(2)
-                        s.sendto(b"GET_TIME", (ip, PORT_UDP_BERKELEY))
+                        s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKLEY))
                         data, _ = s.recvfrom(1024)
                         tempos[ip] = float(data.decode())
-                except:
-                    pass
+                except: pass
             if tempos:
                 media = sum(tempos.values()) / len(tempos)
-                # Ajusta o próprio relógio
                 self.clock.set(media)
                 print(f"[BERKELEY] Média={media:.2f} Coordenador ajustou o relógio.")
-                # Envia delta para trabalhadores
-                for ip in lista:
-                    if ip in tempos:
-                        delta = media - tempos[ip]
-                        try:
-                            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                                s.sendto(f"{delta}".encode(), (ip, PORT_UDP_BERKELEY))
-                        except:
-                            pass
+                for ip in tempos.keys():
+                    if ip == self.meu_ip:
+                        continue
+                    delta = media - tempos[ip]
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                            s.sendto(f"{delta}".encode(), (ip, PORTA_UDP_BERKLEY))
+                    except: pass
 
 class Trabalhador:
-    def __init__(self, coord_ip):
+    def __init__(self, meu_ip, coord_ip):
+        self.meu_ip = meu_ip
         self.coord_ip = coord_ip
+        self.lista_maquinas = []
         self.running = True
+        self.is_coordenador = False
         self.clock = RelogioBerkeley()
         threading.Thread(target=self.udp_berkeley, daemon=True).start()
-        self.socket = socket.create_connection((coord_ip, PORT))
-        envia_json(self.socket, {"cmd": "REGISTRAR"})
-        recebe_json(self.socket)
+        threading.Thread(target=self.verificar_coordenador_periodicamente, daemon=True).start()
         threading.Thread(target=self.executa, daemon=True).start()
 
-    def executa(self):
-        while self.running:
-            envia_json(self.socket, {"cmd": "PEDIR_TAREFA"})
-            resposta = recebe_json(self.socket)
-            if not resposta: break
-            cmd = resposta.get("cmd")
-            if cmd == "TAREFA":
-                comprimento = resposta["comprimento"]
-                conjunto_nome = resposta["conjunto"]
-                alvo_md5 = resposta["hash"]
-                conjunto = CONJUNTOS_MAP[conjunto_nome]
-                achou = self.forca_bruta(comprimento, conjunto, alvo_md5)
-                if achou:
-                    envia_json(self.socket, {"cmd": "SENHA_ENCONTRADA", "senha": achou})
-                    resposta = recebe_json(self.socket)
-                    break
-            elif cmd == "ENCERRAR":
-                senha = resposta.get("senha")
-                if senha:
-                    print(f"[TRABALHADOR] Senha encontrada: {senha}")
-                else:
-                    print(f"[TRABALHADOR] Encerrando, senha não encontrada.")
-                envia_json(self.socket, {"cmd": "FINALIZANDO"})
-                break
-        self.socket.close()
-        self.running = False
+    def atualiza_lista(self):
+        try:
+            sock = socket.create_connection((self.coord_ip, PORTA_TCP), timeout=5)
+            envia_json(sock, {"cmd": "GET_LISTA"})
+            resposta = recebe_json(sock)
+            if resposta and resposta.get("cmd") == "LISTA":
+                self.lista_maquinas = resposta.get("lista")
+            sock.close()
+        except: pass
 
-    def forca_bruta(self, comprimento, conjunto, alvo_md5):
-        for tup in itertools.product(conjunto, repeat=comprimento):
-            s = ''.join(tup)
-            h = hashlib.md5(s.encode()).hexdigest()
-            print(f"[TRABALHADOR][{self.clock.get()}] Testando '{s}' ({h})")
-            if h == alvo_md5.lower():
-                print(f"[TRABALHADOR][{self.clock.get()}] SENHA ENCONTRADA: {s}")
-                return s
+    def verificar_coordenador_periodicamente(self):
+        while self.running:
+            time.sleep(CHECAGEM_COORDENADOR_INTERVALO)
+            if self.is_coordenador or not self.running:
+                continue
+            # Tenta se comunicar com o coordenador
+            try:
+                with socket.create_connection((self.coord_ip, PORTA_TCP), timeout=2):
+                    continue
+            except Exception:
+                print("[ELEIÇÃO] Coordenador caiu! Iniciando eleição...")
+                self.atualiza_lista()
+                self.iniciar_eleicao()
+
+    def iniciar_eleicao(self):
+        for ip in self.lista_maquinas:
+            if ip == self.meu_ip:
+                print("[ELEIÇÃO] Eu sou o novo coordenador!")
+                self.is_coordenador = True
+                self.coord_ip = self.meu_ip
+                # Descobre alvo_md5 e inicia coordenador
+                alvo_md5 = self.obtem_alvo_md5()
+                Coordenador(self.meu_ip, alvo_md5, self.lista_maquinas)
+                self.running = False
+                self.anunciar_novo_coordenador()
+                break
+            else:
+                # Tenta verificar se o ip está ativo
+                try:
+                    with socket.create_connection((ip, PORTA_TCP), timeout=2):
+                        return  # Outro IP está ativo, será o coordenador
+                except Exception:
+                    continue
+
+    def anunciar_novo_coordenador(self):
+        msg = {"cmd": "NOVO_COORDENADOR", "ip": self.meu_ip}
+        for ip in self.lista_maquinas:
+            if ip != self.meu_ip:
+                try:
+                    with socket.create_connection((ip, PORTA_TCP), timeout=2) as s:
+                        envia_json(s, msg)
+                except: pass
+
+    def obtem_alvo_md5(self):
+        # Pergunta para os outros
+        for ip in self.lista_maquinas:
+            if ip == self.meu_ip: continue
+            try:
+                with socket.create_connection((ip, PORTA_TCP), timeout=5) as s:
+                    envia_json(s, {"cmd": "GET_HASH"})
+                    resposta = recebe_json(s)
+                    if resposta and resposta.get("cmd") == "HASH":
+                        return resposta.get("hash")
+            except: pass
         return None
 
     def udp_berkeley(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('', PORT_UDP_BERKELEY))
+        sock.bind(('', PORTA_UDP_BERKLEY))
         while self.running:
             try:
                 data, addr = sock.recvfrom(1024)
@@ -222,16 +269,71 @@ class Trabalhador:
             except:
                 continue
 
+    def executa(self):
+        try:
+            sock = socket.create_connection((self.coord_ip, PORTA_TCP), timeout=5)
+            envia_json(sock, {"cmd": "REGISTRAR"})
+            recebe_json(sock)
+            while self.running:
+                envia_json(sock, {"cmd": "PEDIR_TAREFA"})
+                resposta = recebe_json(sock)
+                if not resposta: break
+                cmd = resposta.get("cmd")
+                if cmd == "TAREFA":
+                    comprimento = resposta["comprimento"]
+                    conjunto_nome = resposta["conjunto"]
+                    alvo_md5 = resposta["hash"]
+                    conjunto = CONJUNTOS_MAP[conjunto_nome]
+                    achou = self.forca_bruta(comprimento, conjunto, alvo_md5)
+                    if achou:
+                        envia_json(sock, {"cmd": "SENHA_ENCONTRADA", "senha": achou})
+                        resposta = recebe_json(sock)
+                        break
+                elif cmd == "ENCERRAR":
+                    senha = resposta.get("senha")
+                    if senha:
+                        print(f"[TRABALHADOR] Senha encontrada: {senha}")
+                    else:
+                        print(f"[TRABALHADOR] Encerrando, senha não encontrada.")
+                    envia_json(sock, {"cmd": "FINALIZANDO"})
+                    break
+            sock.close()
+            self.running = False
+        except Exception as e:
+            print(f"[TRABALHADOR] Erro conexão/execução: {e}")
+
+    def forca_bruta(self, comprimento, conjunto, alvo_md5):
+        for tup in itertools.product(conjunto, repeat=comprimento):
+            s = ''.join(tup)
+            h = hashlib.md5(s.encode()).hexdigest()
+            print(f"[TRABALHADOR][{self.clock.get()}] Testando '{s}' ({h})")
+            if h == alvo_md5.lower():
+                print(f"[TRABALHADOR][{self.clock.get()}] SENHA ENCONTRADA: {s}")
+                return s
+        return None
+
+def get_meu_ip():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except:
+        return "127.0.0.1"
+
 def main():
     papel = input("Coordenador (c) ou Trabalhador (t)? ").strip().lower()
+    meu_ip = get_meu_ip()
     if papel == 'c':
-        alvo_md5 = input("Digite o hash MD5 alvo: ").strip()
-        Coordenador(alvo_md5)
+        hash_md5 = input("Digite o hash MD5 alvo: ").strip()
+        print(f"Seu IP detectado: {meu_ip}")
+        # Coordenador começa com lista apenas com ele
+        Coordenador(meu_ip, hash_md5, [meu_ip])
         while True:
             time.sleep(1)
     elif papel == 't':
         coord_ip = input("IP do coordenador: ").strip()
-        Trabalhador(coord_ip)
+        print(f"Seu IP detectado: {meu_ip}")
+        Trabalhador(meu_ip, coord_ip)
         while True:
             time.sleep(1)
 
