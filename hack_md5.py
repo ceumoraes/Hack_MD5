@@ -9,8 +9,8 @@ import random
 PORTA_TCP = 12001
 PORTA_UDP_BERKLEY = 12002
 TIMEOUT = 30
-CHECAGEM_COORDENADOR_INTERVALO = 5  # segundos
-SINC_BERKLEY_INTERVALO = 10         # segundos
+CHECAGEM_COORDENADOR_INTERVALO = 5
+SINC_BERKLEY_INTERVALO = 10
 
 CONJUNTOS = [
     "digitos",
@@ -31,7 +31,6 @@ CONJUNTOS_MAP = {
 
 class BerkeleyClock:
     def __init__(self):
-        # Randomiza o tempo inicial para mostrar sincronização
         self.time = time.time() + random.randint(-30, 30)
 
     def tick(self, inc=1):
@@ -305,6 +304,20 @@ class ServidorDistribuido:
         print(f"[DEBUG][{self.clock.get()}] [PROMOÇÃO] Promovendo-me a coordenador por detecção no trabalhador...")
         self._iniciar_eleicao()
 
+    def anunciar_novo_coordenador(self):
+        print(f"[DEBUG][{self.clock.get()}] Anunciando para todas as máquinas que sou o novo coordenador!")
+        for ip in self.gerente.get_lista_maquinas():
+            if ip != self.meu_ip:
+                try:
+                    msg = json.dumps({"cmd": "NOVO_COORDENADOR", "ip": self.meu_ip}).encode()
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(5)
+                    s.connect((ip, PORTA_TCP))
+                    s.sendall(msg)
+                    s.close()
+                except Exception as e:
+                    print(f"[DEBUG][{self.clock.get()}] Falha ao notificar {ip}: {e}")
+
     def conectar_ao_sistema(self):
         print(f"[DEBUG][{self.clock.get()}] Solicitando entrada no sistema...")
         try:
@@ -339,7 +352,10 @@ class ServidorDistribuido:
             lista = self.gerente.get_lista_maquinas()
             if len(lista) == 1 and lista[0] == self.meu_ip and not self.is_coordenador:
                 print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Só eu restando, assumindo como coordenador!")
-                self._iniciar_eleicao()
+                self.is_coordenador = True
+                self.coordenador_ip = self.meu_ip
+                self.gerente.restaurar_progresso_tarefas()
+                self.anunciar_novo_coordenador()
             elif not self._checar_coordenador():
                 print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Coordenador indisponível! Iniciando eleição...")
                 self._iniciar_eleicao()
@@ -370,17 +386,7 @@ class ServidorDistribuido:
             self.is_coordenador = True
             self.coordenador_ip = self.meu_ip
             self.gerente.restaurar_progresso_tarefas()
-            for ip in lista:
-                if ip != self.meu_ip:
-                    try:
-                        msg = json.dumps({"cmd": "NOVO_COORDENADOR", "ip": self.meu_ip}).encode()
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.settimeout(5)
-                        s.connect((ip, PORTA_TCP))
-                        s.sendall(msg)
-                        s.close()
-                    except Exception as e:
-                        print(f"[DEBUG][{self.clock.get()}] [ELEIÇÃO] Falha ao notificar {ip}: {e}")
+            self.anunciar_novo_coordenador()
             if self.brute_force:
                 self.brute_force.sair = True
                 self.brute_force = None
@@ -400,7 +406,6 @@ class ServidorDistribuido:
                 if ip == self.meu_ip:
                     continue
                 try:
-                    # Solicita tempo dos trabalhadores via UDP
                     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     s.settimeout(2)
                     s.sendto(b"GET_TIME", (ip, PORTA_UDP_BERKLEY))
@@ -530,6 +535,7 @@ class ServidorDistribuido:
                 self.is_coordenador = (self.meu_ip == self.coordenador_ip)
                 if self.is_coordenador:
                     self.gerente.restaurar_progresso_tarefas()
+                    self.anunciar_novo_coordenador()
                     if self.brute_force:
                         self.brute_force.sair = True
                         self.brute_force = None
